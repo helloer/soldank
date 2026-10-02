@@ -1,10 +1,10 @@
 use super::*;
 
 const SECOND: u16 = 60;
-const BULLET_TIMEOUT: u16 = SECOND * 7;
-const GRENADE_TIMEOUT: u16 = SECOND * 3;
-const M2BULLET_TIMEOUT: u16 = SECOND;
-const FLAMER_TIMEOUT: u16 = SECOND * 32;
+pub(crate) const BULLET_TIMEOUT: u16 = SECOND * 7;
+pub(crate) const GRENADE_TIMEOUT: u16 = SECOND * 3;
+pub(crate) const M2BULLET_TIMEOUT: u16 = SECOND;
+pub(crate) const FLAMER_TIMEOUT: u16 = 32;
 const MELEE_TIMEOUT: u16 = 1;
 
 #[allow(dead_code)]
@@ -77,6 +77,8 @@ pub struct Weapon {
     pub fire_mode: u8,
     pub timeout: u16,
     pub bullet_style: BulletStyle,
+    /// `WEAPON_NOCOLLISION_*` flags from the weapons mod.
+    pub no_collision: u8,
     pub sprite: Option<sprites::Weapon>,
     pub clip_sprite: Option<sprites::Weapon>,
     pub fire_sprite: Option<sprites::Weapon>,
@@ -1238,24 +1240,31 @@ impl Weapon {
             }
         };
 
-        weapon.fire_interval_prev = weapon.fire_interval;
-        weapon.fire_interval_count = weapon.fire_interval;
-        weapon.fire_interval_real = f32::from(weapon.fire_interval);
-        weapon.ammo_count = weapon.ammo;
-        weapon.reload_time_prev = weapon.reload_time;
-        weapon.reload_time_count = weapon.reload_time;
-        weapon.reload_time_real = f32::from(weapon.reload_time);
-        weapon.start_up_time_count = weapon.start_up_time;
+        weapon.derive();
+        weapon
+    }
 
-        if weapon.clip_reload {
-            weapon.clip_out_time = (f32::from(weapon.reload_time) * 0.8).trunc() as u16;
-            weapon.clip_in_time = (f32::from(weapon.reload_time) * 0.3).trunc() as u16;
+    /// The per-weapon part of `BuildWeapons`: timers, clip timings, bullet lifetime.
+    fn derive(&mut self) {
+        self.fire_interval_prev = self.fire_interval;
+        self.fire_interval_count = self.fire_interval;
+        self.fire_interval_real = f32::from(self.fire_interval);
+        self.ammo_count = self.ammo;
+        self.reload_time_prev = self.reload_time;
+        self.reload_time_count = self.reload_time;
+        self.reload_time_real = f32::from(self.reload_time);
+        self.start_up_time_count = self.start_up_time;
+
+        if self.clip_reload {
+            // Word * untyped real constant: extended precision
+            self.clip_out_time = (f64::from(self.reload_time) * 0.8).trunc() as u16;
+            self.clip_in_time = (f64::from(self.reload_time) * 0.3).trunc() as u16;
         } else {
-            weapon.clip_out_time = 0;
-            weapon.clip_in_time = 0;
+            self.clip_out_time = 0;
+            self.clip_in_time = 0;
         }
 
-        weapon.timeout = match weapon.bullet_style {
+        self.timeout = match self.bullet_style {
             BulletStyle::FragGrenade | BulletStyle::ClusterGrenade => GRENADE_TIMEOUT,
             BulletStyle::Flame => FLAMER_TIMEOUT,
             BulletStyle::Fist | BulletStyle::Blade => MELEE_TIMEOUT,
@@ -1263,14 +1272,218 @@ impl Weapon {
             _ => BULLET_TIMEOUT,
         };
 
-        if kind == WeaponKind::M79 {
-            weapon.ammo_count = 0;
+        // Force M79 reload on spawn
+        if self.kind == WeaponKind::M79 {
+            self.ammo_count = 0;
         }
+    }
 
-        weapon
+    /// Copies the gameplay stats of `other` (`BuildWeapons` for cluster nades and thrown knives).
+    fn copy_stats(&mut self, other: &Weapon, style: BulletStyle) {
+        self.hit_multiply = other.hit_multiply;
+        self.fire_interval = other.fire_interval;
+        self.ammo = other.ammo;
+        self.reload_time = other.reload_time;
+        self.speed = other.speed;
+        self.bullet_style = style;
+        self.start_up_time = other.start_up_time;
+        self.bink = other.bink;
+        self.movement_acc = other.movement_acc;
+        self.bullet_spread = other.bullet_spread;
+        self.recoil = other.recoil;
+        self.push = other.push;
+        self.inherited_velocity = other.inherited_velocity;
+    }
+
+    /// Reload finished: full clip, timers reset.
+    pub fn refill(&mut self) {
+        self.reload_time_prev = self.reload_time;
+        self.fire_interval_prev = self.fire_interval;
+        self.reload_time_count = self.reload_time;
+        self.fire_interval_count = self.fire_interval;
+        self.start_up_time_count = self.start_up_time;
+        self.ammo_count = self.ammo;
     }
 
     pub fn is_any(&self, weapons: &[WeaponKind]) -> bool {
         weapons.contains(&self.kind)
+    }
+}
+
+/// Soldat's `Guns` table: default stats (normal or realistic), optionally overridden by a
+/// weapons mod (`configs/weapons.ini`, `LoadWeaponsConfig`).
+#[derive(Debug, Clone)]
+pub struct WeaponTable {
+    guns: Vec<Weapon>,
+}
+
+/// Weapons a weapons mod can change (`ORIGINAL_WEAPONS`): everything up to the frag grenade.
+const ORIGINAL_WEAPONS: usize = 20;
+
+impl Default for WeaponTable {
+    fn default() -> Self {
+        WeaponTable::new(false, None).unwrap()
+    }
+}
+
+impl WeaponTable {
+    /// Builds the table; `weapons_mod` is the text of a weapons.ini. A broken mod is an
+    /// error (Soldat then falls back to the defaults).
+    pub fn new(realistic: bool, weapons_mod: Option<&str>) -> Result<WeaponTable, String> {
+        let mut guns: Vec<Weapon> = WeaponKind::values()
+            .iter()
+            .map(|&kind| Weapon::new(kind, realistic))
+            .collect();
+
+        if let Some(text) = weapons_mod {
+            let ini = Ini::parse(text);
+            if !ini.has_section("Info") {
+                return Err(r#"Section "[Info]" not found"#.to_string());
+            }
+            for gun in guns.iter_mut().take(ORIGINAL_WEAPONS) {
+                if ini.has_section(gun.ini_name) {
+                    apply_weapons_mod(gun, &ini)?;
+                }
+            }
+        }
+
+        let index = |kind: WeaponKind| kind as usize;
+        let frag = guns[index(WeaponKind::FragGrenade)];
+        guns[index(WeaponKind::ClusterGrenade)].copy_stats(&frag, BulletStyle::ClusterGrenade);
+        let cluster_nade = guns[index(WeaponKind::ClusterGrenade)];
+        guns[index(WeaponKind::Cluster)].copy_stats(&cluster_nade, BulletStyle::Cluster);
+        let knife = guns[index(WeaponKind::Knife)];
+        guns[index(WeaponKind::ThrownKnife)].copy_stats(&knife, BulletStyle::ThrownKnife);
+
+        for gun in &mut guns {
+            gun.derive();
+        }
+
+        Ok(WeaponTable { guns })
+    }
+
+    /// A fresh weapon of this kind (full clip, timers reset).
+    pub fn get(&self, kind: WeaponKind) -> Weapon {
+        self.guns[kind as usize]
+    }
+}
+
+fn apply_weapons_mod(gun: &mut Weapon, ini: &Ini) -> Result<(), String> {
+    let section = gun.ini_name;
+    // StrToInt into the field type (no range checks), StrToFloat (Extended) into a Single
+    let int = |key: &str| -> Result<Option<i64>, String> {
+        ini.get(section, key)
+            .map(|v| {
+                v.parse::<i64>()
+                    .map_err(|_| format!(r#"Value "{key}" is not a number"#))
+            })
+            .transpose()
+    };
+    let float = |key: &str| -> Result<Option<f32>, String> {
+        ini.get(section, key)
+            .map(|v| {
+                v.parse::<f64>()
+                    .map(|v| v as f32)
+                    .map_err(|_| format!(r#"Value "{key}" is not a number"#))
+            })
+            .transpose()
+    };
+
+    if let Some(v) = float("Damage")? {
+        gun.hit_multiply = v;
+    }
+    if let Some(v) = int("FireInterval")? {
+        gun.fire_interval = v as u16;
+    }
+    if let Some(v) = int("Ammo")? {
+        gun.ammo = v as u8;
+    }
+    if let Some(v) = int("ReloadTime")? {
+        gun.reload_time = v as u16;
+    }
+    if let Some(v) = float("Speed")? {
+        gun.speed = v;
+    }
+    if let Some(v) = int("BulletStyle")? {
+        gun.bullet_style = BulletStyle::from_num(v as u8)
+            .ok_or_else(|| format!("{section}: unknown BulletStyle {v}"))?;
+    }
+    if let Some(v) = int("StartUpTime")? {
+        gun.start_up_time = v as u16;
+    }
+    if let Some(v) = int("Bink")? {
+        gun.bink = v as i16;
+    }
+    if let Some(v) = float("MovementAcc")? {
+        gun.movement_acc = v;
+    }
+    if let Some(v) = float("BulletSpread")? {
+        gun.bullet_spread = v;
+    }
+    if let Some(v) = int("Recoil")? {
+        gun.recoil = v as u16;
+    }
+    if let Some(v) = float("Push")? {
+        gun.push = v;
+    }
+    if let Some(v) = float("InheritedVelocity")? {
+        gun.inherited_velocity = v;
+    }
+    if let Some(v) = float("ModifierLegs")? {
+        gun.modifier_legs = v;
+    }
+    if let Some(v) = float("ModifierChest")? {
+        gun.modifier_chest = v;
+    }
+    if let Some(v) = float("ModifierHead")? {
+        gun.modifier_head = v;
+    }
+    if let Some(v) = int("NoCollision")? {
+        gun.no_collision = v as u8;
+    }
+    Ok(())
+}
+
+/// Minimal case-insensitive ini reader (`TMemIniFile`).
+struct Ini {
+    sections: Vec<(String, Vec<(String, String)>)>,
+}
+
+impl Ini {
+    fn parse(text: &str) -> Ini {
+        let mut sections: Vec<(String, Vec<(String, String)>)> = Vec::new();
+        for line in text.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with(';') {
+                continue;
+            }
+            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                sections.push((name.trim().to_string(), Vec::new()));
+            } else if let (Some((key, value)), Some((_, values))) =
+                (line.split_once('='), sections.last_mut())
+            {
+                values.push((key.trim().to_string(), value.trim().to_string()));
+            }
+        }
+        Ini { sections }
+    }
+
+    fn section(&self, name: &str) -> Option<&[(String, String)]> {
+        self.sections
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, values)| values.as_slice())
+    }
+
+    fn has_section(&self, name: &str) -> bool {
+        !name.is_empty() && self.section(name).is_some()
+    }
+
+    /// `TStringList.Values`: first matching key, empty values count as missing.
+    fn get(&self, section: &str, key: &str) -> Option<&str> {
+        self.section(section)?
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.as_str())
+            .filter(|v| !v.is_empty())
     }
 }

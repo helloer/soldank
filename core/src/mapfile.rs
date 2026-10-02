@@ -6,8 +6,8 @@ use std::io::{self, Cursor, Read};
 const MAX_POLYS: i32 = 5000;
 //const MIN_SECTOR: i32 = -25;
 const MAX_SECTOR: i32 = 25;
-//const MIN_SECTORZ: i32 = -35;
-//const MAX_SECTORZ: i32 = 35;
+const MIN_SECTORZ: i32 = -35;
+const MAX_SECTORZ: i32 = 35;
 //const TILESECTOR: i32 = 3;
 //const MIN_TILE: i32 = MIN_SECTOR * TILESECTOR;
 //const MAX_TILE: i32 = MAX_SECTOR * TILESECTOR;
@@ -44,6 +44,56 @@ pub enum PolyType {
     NonFlaggersCollide,
     Background,
     BackgroundTransition,
+}
+
+/// What a ray cast collides with (`TPolyMap.RayCast` parameters).
+#[derive(Debug, Copy, Clone)]
+pub struct RayCast {
+    pub player: bool,
+    pub flag: bool,
+    pub bullet: bool,
+    pub check_collider: bool,
+    pub team: Team,
+}
+
+impl Default for RayCast {
+    fn default() -> Self {
+        RayCast {
+            player: false,
+            flag: false,
+            bullet: true,
+            check_collider: false,
+            team: Team::None,
+        }
+    }
+}
+
+impl RayCast {
+    fn collides(&self, polytype: PolyType) -> bool {
+        use PolyType::*;
+        let (np, nb) = (!self.player, !self.bullet);
+        let team = self.team;
+
+        let excluded = match polytype {
+            AlphaBullets => team != Team::Alpha || nb,
+            AlphaPlayers => team != Team::Alpha || np,
+            BravoBullets => team != Team::Bravo || nb,
+            BravoPlayers => team != Team::Bravo || np,
+            CharlieBullets => team != Team::Charlie || nb,
+            CharliePlayers => team != Team::Charlie || np,
+            DeltaBullets => team != Team::Delta || nb,
+            DeltaPlayers => team != Team::Delta || np,
+            OnlyFlaggers => !self.flag || np,
+            NotFlaggers => self.flag || np,
+            NonFlaggersCollide => !self.flag || np || nb,
+            OnlyBulletsCollide => nb,
+            OnlyPlayersCollide => np,
+            NoCollide | Background | BackgroundTransition => true,
+            _ => false,
+        };
+
+        !excluded
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -186,7 +236,8 @@ impl MapFile {
         let texture_name = read_string(buf, 24)?;
         let bg_color_top = read_color(buf)?;
         let bg_color_bottom = read_color(buf)?;
-        let start_jet = buf.read_i32::<LittleEndian>()?;
+        // TPolyMap.LoadData gives 19% more jet fuel than the map file says ("quickfix")
+        let start_jet = 119 * buf.read_i32::<LittleEndian>()? / 100;
         let grenade_packs = buf.read_u8()?;
         let medikits = buf.read_u8()?;
         let weather = buf.read_u8()?;
@@ -240,7 +291,8 @@ impl MapFile {
                 }
             }
 
-            let bounciness = normals[2].length();
+            // Vec2Length of the third normal's x/y ("gg" in TPolyMap.LoadData)
+            let bounciness = vec2(normals[2].x, normals[2].y).length();
 
             polygons.push(MapPolygon {
                 vertices,
@@ -396,6 +448,183 @@ impl MapFile {
             spawnpoints,
             perps,
         })
+    }
+
+    /// Polygon indices (1-based) of sector (x, y), empty outside the map grid.
+    pub fn sector(&self, x: i32, y: i32) -> &[u16] {
+        let n = self.sectors_num;
+
+        if (-n..=n).contains(&x) && (-n..=n).contains(&y) {
+            &self.sectors_poly[(x + 25) as usize][(y + 25) as usize].polys
+        } else {
+            &[]
+        }
+    }
+
+    /// Port of `TPolyMap.RayCast`. Returns the distance to the first polygon hit between
+    /// `a` and `b` (0 when `a` is inside one), or `None`. A segment longer than `max_dist`
+    /// counts as a hit at distance 9999999, like in Soldat.
+    pub fn ray_cast(&self, a: Vec2, b: Vec2, max_dist: f32, filter: RayCast) -> Option<f32> {
+        let distance = (a - b).length();
+        if distance > max_dist {
+            return Some(9_999_999.0);
+        }
+
+        let div = self.sectors_division as f32;
+        let ax = (a.x.min(b.x) / div).round() as i32;
+        let ay = (a.y.min(b.y) / div).round() as i32;
+        let bx = (a.x.max(b.x) / div).round() as i32;
+        let by = (a.y.max(b.y) / div).round() as i32;
+
+        if ax > MAX_SECTORZ || bx < MIN_SECTORZ || ay > MAX_SECTORZ || by < MIN_SECTORZ {
+            return None;
+        }
+
+        let mut hit = None;
+
+        'sectors: for i in ax.max(MIN_SECTORZ)..=bx.min(MAX_SECTORZ) {
+            for j in ay.max(MIN_SECTORZ)..=by.min(MAX_SECTORZ) {
+                for &w in self.sector(i, j) {
+                    let index = w as usize - 1;
+
+                    if !filter.collides(self.polygons[index].polytype) {
+                        continue;
+                    }
+
+                    if self.point_in_poly(a, &self.polygons[index]) {
+                        hit = Some(0.0);
+                        break 'sectors;
+                    }
+
+                    if let Some(d) = self.line_in_poly(a, b, index) {
+                        hit = Some((d - a).length());
+                        break 'sectors;
+                    }
+                }
+            }
+        }
+
+        if hit.is_none() && filter.check_collider {
+            // the segment passes through a collider: |A*x + B*y + C| / sqrt(A^2 + B^2) < r
+            let e = a.y - b.y;
+            let f = b.x - a.x;
+            let g = a.x * b.y - a.y * b.x;
+            let h = (e * e + f * f).sqrt();
+
+            for collider in self.colliders.iter().filter(|c| c.active) {
+                let c = vec2(collider.x, collider.y);
+
+                if (e * c.x + f * c.y + g).abs() / h <= collider.radius {
+                    let r = a.distance_squared(b) + collider.radius * collider.radius;
+                    if a.distance_squared(c) <= r && b.distance_squared(c) <= r {
+                        return None;
+                    }
+                }
+            }
+        }
+
+        hit
+    }
+
+    /// Port of `TPolyMap.CollisionTest`: if `pos` is inside a solid polygon, returns the
+    /// push-out vector.
+    pub fn collision_test(&self, pos: Vec2, is_flag: bool) -> Option<Vec2> {
+        use PolyType::*;
+
+        let kx = (pos.x / self.sectors_division as f32).round() as i32;
+        let ky = (pos.y / self.sectors_division as f32).round() as i32;
+        let n = self.sectors_num;
+
+        if !(kx > -n && kx < n && ky > -n && ky < n) {
+            return None;
+        }
+
+        for &w in self.sector(kx, ky) {
+            let index = w as usize - 1;
+            let polytype = self.polygons[index].polytype;
+
+            let excluded = matches!(
+                polytype,
+                OnlyBulletsCollide
+                    | OnlyPlayersCollide
+                    | NoCollide
+                    | AlphaPlayers
+                    | BravoPlayers
+                    | CharliePlayers
+                    | DeltaPlayers
+                    | Background
+                    | BackgroundTransition
+            ) || (!is_flag
+                && matches!(polytype, OnlyFlaggers | NotFlaggers | NonFlaggersCollide));
+
+            if !excluded && self.point_in_poly(pos, &self.polygons[index]) {
+                let (mut d, mut k) = (0.0, 0);
+                let perp = self.closest_perpendicular(index as i32, pos, &mut d, &mut k);
+                return Some(perp * (1.5 * d));
+            }
+        }
+
+        None
+    }
+
+    /// Port of `TPolyMap.LineInPoly`: intersection of segment a-b with an edge of the polygon.
+    pub fn line_in_poly(&self, a: Vec2, b: Vec2, poly: usize) -> Option<Vec2> {
+        let vertices = &self.polygons[poly].vertices;
+
+        for i in 0..3 {
+            let p = vec2(vertices[i].x, vertices[i].y);
+            let q = vec2(vertices[(i + 1) % 3].x, vertices[(i + 1) % 3].y);
+
+            if b.x == a.x && q.x == p.x {
+                continue;
+            }
+
+            if b.x == a.x {
+                let bk = (q.y - p.y) / (q.x - p.x);
+                let bm = p.y - bk * p.x;
+                let v = vec2(a.x, bk * a.x + bm);
+
+                if v.x > p.x.min(q.x)
+                    && v.x < p.x.max(q.x)
+                    && v.y > a.y.min(b.y)
+                    && v.y < a.y.max(b.y)
+                {
+                    return Some(v);
+                }
+            } else if q.x == p.x {
+                let ak = (b.y - a.y) / (b.x - a.x);
+                let am = a.y - ak * a.x;
+                let v = vec2(p.x, ak * p.x + am);
+
+                if v.y > p.y.min(q.y)
+                    && v.y < p.y.max(q.y)
+                    && v.x > a.x.min(b.x)
+                    && v.x < a.x.max(b.x)
+                {
+                    return Some(v);
+                }
+            } else {
+                let ak = (b.y - a.y) / (b.x - a.x);
+                let bk = (q.y - p.y) / (q.x - p.x);
+
+                if ak != bk {
+                    let am = a.y - ak * a.x;
+                    let bm = p.y - bk * p.x;
+                    let x = (bm - am) / (ak - bk);
+                    let v = vec2(x, ak * x + am);
+
+                    if v.x > p.x.min(q.x)
+                        && v.x < p.x.max(q.x)
+                        && v.x > a.x.min(b.x)
+                        && v.x < a.x.max(b.x)
+                    {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     pub fn point_in_poly(&self, p: Vec2, poly: &MapPolygon) -> bool {

@@ -115,6 +115,29 @@ impl ParticleSystem {
         &self.constraints
     }
 
+    /// Enables or disables constraint `num` (1-based, as in Soldat).
+    pub fn set_constraint_active(&mut self, num: usize, active: bool) {
+        if let Some(constraint) = self.constraints.get_mut(num - 1) {
+            constraint.active = active;
+        }
+    }
+
+    pub fn activate_all_constraints(&mut self) {
+        for constraint in &mut self.constraints {
+            constraint.active = true;
+        }
+    }
+
+    /// Sets timestep, gravity (multiplier * Grav) and verlet damping of every particle
+    /// (Soldat keeps them per particle system).
+    pub fn set_physics(&mut self, timestep: f32, gravity: f32, v_damping: f32) {
+        for particle in &mut self.particles {
+            particle.timestep = timestep;
+            particle.gravity = gravity;
+            particle.v_damping = v_damping;
+        }
+    }
+
     pub fn do_verlet_timestep(&mut self) {
         for particle in self.particles.iter_mut() {
             if particle.active {
@@ -127,7 +150,7 @@ impl ParticleSystem {
 
     pub fn do_verlet_timestep_for(&mut self, particle_num: usize, constraint_num: usize) {
         self.particles[particle_num - 1].verlet();
-        self.satisfy_constraint_for(constraint_num - 1);
+        self.satisfy_constraint_for(constraint_num);
     }
 
     #[allow(dead_code)]
@@ -194,7 +217,8 @@ impl ParticleSystem {
             DataError::parse(file, format!("expected {what}, got {line:?}"))
         };
 
-        let number = |lines: &mut dyn Iterator<Item = &str>| -> Result<f32, DataError> {
+        // StrToFloat returns Extended, so the scaling happens in extended precision
+        let number = |lines: &mut dyn Iterator<Item = &str>| -> Result<f64, DataError> {
             let line = lines.next();
             line.and_then(|l| l.parse().ok())
                 .ok_or_else(|| error("a number", line))
@@ -218,7 +242,7 @@ impl ParticleSystem {
             let x = number(&mut lines)?;
             let _y = number(&mut lines)?;
             let z = number(&mut lines)?;
-            let p = vec2(-x * scale / 1.2, -z * scale);
+            let p = vec2(fpc(-x * ext(scale) / 1.2), fpc(-z * ext(scale)));
 
             particles.push(Particle {
                 active: true,

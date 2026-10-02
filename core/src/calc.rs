@@ -7,6 +7,19 @@ pub type Rad = f32;
 pub fn rad(angle: f32) -> Rad {
     angle
 }
+
+/// Free Pascal evaluates arithmetic involving untyped real constants (`0.97`, `RUNSPEED / 6`)
+/// and `Variant`s in extended precision, rounding only when the result is stored in a
+/// `Single`. Doing the same in f64 reproduces opensoldat bit-for-bit; use `ext` to promote
+/// and `fpc` to store.
+pub fn ext(value: f32) -> f64 {
+    f64::from(value)
+}
+
+/// Rounds an extended-precision Pascal expression into a `Single`. See [`ext`].
+pub fn fpc(value: f64) -> f32 {
+    value as f32
+}
 use std::ops::{Add, Mul, Sub};
 
 pub fn distance(p1: Vec2, p2: Vec2) -> f32 {

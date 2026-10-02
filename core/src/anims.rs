@@ -136,7 +136,8 @@ impl AnimState {
     }
 
     pub fn pos(&self, index: usize) -> Vec2 {
-        self.data.frames[self.frame - 1].positions[index - 1]
+        // frame 0 only happens on corpses (Die resets it), where animations aren't applied
+        self.data.frames[self.frame.max(1) - 1].positions[index - 1]
     }
 
     pub fn num_frames(&self) -> usize {
@@ -181,7 +182,8 @@ impl AnimData {
             Ok(())
         };
 
-        let number = |line: Option<&str>| -> Result<f32, DataError> {
+        // StrToFloat returns Extended, so the scaling happens in extended precision
+        let number = |line: Option<&str>| -> Result<f64, DataError> {
             line.and_then(|l| l.parse().ok())
                 .ok_or_else(|| DataError::parse(file, format!("expected a number, got {line:?}")))
         };
@@ -209,7 +211,7 @@ impl AnimData {
                     let _y = number(lines.next())?;
                     let z = number(lines.next())?;
 
-                    positions.push(vec2(-3.0 * x / 1.1, -3.0 * z));
+                    positions.push(vec2(fpc(-3.0 * x / 1.1), fpc(-3.0 * z)));
                 }
             }
         }
@@ -241,7 +243,7 @@ const ANIMATION_FILES: &[(Anim, &str, i32, bool)] = &[
     (Anim::Shotgun, "shotgun.poa", 1, false),
     (Anim::ClipOut, "clipout.poa", 3, false),
     (Anim::ClipIn, "clipin.poa", 3, false),
-    (Anim::SlideBack, "slideback.poa", 2, false),
+    (Anim::SlideBack, "slideback.poa", 2, true),
     (Anim::Change, "change.poa", 1, false),
     (Anim::ThrowWeapon, "wyrzuca.poa", 1, false),
     (Anim::WeaponNone, "bezbroni.poa", 3, false),

@@ -8,7 +8,7 @@ bind a +left; bind d +right; bind w +jump; bind s +crouch; bind x +prone
 bind mouse1 +fire; bind mouse2 +jet
 bind q +changeweapon; bind e +throw; bind f +drop
 bind kpadd +zoomin; bind kpsubtract +zoomout
-bind tab cycleweapon; bind escape quit
+bind tab cycleweapon; bind escape quit; bind t dummy
 ";
 
 /// Binding name of a key: lowercase variant name, digits without the `key` prefix

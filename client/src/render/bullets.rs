@@ -38,6 +38,14 @@ pub fn render_bullet(
                 },
             );
         }
+        BulletStyle::FragGrenade => {
+            let sprite = gfx::Weapon::FragGrenade;
+            batch.add_sprite(
+                &sprites[sprite.group().id()][sprite.id()],
+                rgb(255, 255, 255),
+                Transform::Pos(pos - vec2(1.0, 4.0)),
+            );
+        }
         _ => {
             if let Some(sprite) = bullet.sprite {
                 let sprite = &sprites[sprite.group().id()][sprite.id()];

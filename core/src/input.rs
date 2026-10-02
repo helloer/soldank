@@ -57,9 +57,9 @@ impl Soldier {
         c.down = b.contains(Buttons::CROUCH);
         c.fire = b.contains(Buttons::FIRE);
         c.jets = b.contains(Buttons::JETS);
-        c.change = b.contains(Buttons::CHANGE_WEAPON);
-        c.throw = b.contains(Buttons::THROW);
-        c.drop = b.contains(Buttons::DROP);
+        c.change_weapon = b.contains(Buttons::CHANGE_WEAPON);
+        c.throw_nade = b.contains(Buttons::THROW);
+        c.throw_weapon = b.contains(Buttons::DROP);
         c.prone = b.contains(Buttons::PRONE);
         c.mouse_aim_x = input.aim.x.round() as i32;
         c.mouse_aim_y = input.aim.y.round() as i32;

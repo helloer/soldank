@@ -142,6 +142,7 @@ fn init_console(cli: &Cli) -> Console {
     console.config_dir = cli.config_dir.clone();
     console.register_command("quit", "quit: exit the game");
     console.register_command("map", "map <name>: load a map");
+    console.register_command("dummy", "dummy: spawn an idle soldier to shoot at");
     console.register_command(
         "cycleweapon",
         "cycleweapon: debug, switch to the next weapon",
@@ -188,7 +189,9 @@ struct Game {
 impl Game {
     fn new(vfs: Vfs, console: Console, data: Arc<GameData>, map: MapFile) -> Game {
         let (w, h) = window::screen_size();
-        let mut world = World::new(data, map, WorldConfig::from_cvars(&console.cvars));
+        let config = WorldConfig::from_cvars(&console.cvars, &data);
+        let mut world = World::new(data, map, config);
+        world.spawn_kits();
         let player = world.spawn_soldier();
         let camera = Camera::new(world.soldiers[player].particle.pos, w * (480.0 / h), 480.0);
 
@@ -236,6 +239,14 @@ impl Game {
             match (command.name.as_str(), command.args.as_slice()) {
                 ("quit", _) => window::request_quit(),
                 ("map", [name]) => self.change_map(name),
+                ("dummy", _) => {
+                    let id = self.world.spawn_soldier();
+                    let pos = randomize_start(&self.world.map, Team::None, &mut self.world.rng);
+                    let dummy = &mut self.world.soldiers[id];
+                    dummy.particle.pos = pos;
+                    dummy.particle.old_pos = pos;
+                    self.console.print(format!("dummy spawned at {pos}"));
+                }
                 ("cycleweapon", _) => {
                     let soldier = &mut self.world.soldiers[self.player];
                     let index = soldier.primary_weapon().kind.index();
@@ -252,8 +263,9 @@ impl Game {
     fn change_map(&mut self, name: &str) {
         match MapFile::load(&self.vfs, name) {
             Ok(map) => {
-                let config = WorldConfig::from_cvars(&self.console.cvars);
+                let config = WorldConfig::from_cvars(&self.console.cvars, &self.world.data);
                 self.world = World::new(self.world.data.clone(), map, config);
+                self.world.spawn_kits();
                 self.player = self.world.spawn_soldier();
                 self.camera.pos = self.world.soldiers[self.player].particle.pos;
                 self.camera.pos_prev = self.camera.pos;
@@ -276,7 +288,7 @@ impl EventHandler for Game {
         while self.timeacc >= DT {
             self.timeacc -= DT;
 
-            self.world.config = WorldConfig::from_cvars(&self.console.cvars);
+            self.world.config = WorldConfig::from_cvars(&self.console.cvars, &self.world.data);
 
             let input = Input {
                 buttons: self.input.buttons,
@@ -300,7 +312,6 @@ impl EventHandler for Game {
         self.graphics.render_frame(
             &mut self.context,
             &self.world,
-            &self.world.soldiers[self.player],
             &self.camera,
             self.timecur - DT * (1.0 - p),
             p as f32,

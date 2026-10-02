@@ -24,7 +24,6 @@ impl GameGraphics {
         &mut self,
         context: &mut Gfx2dContext,
         world: &World,
-        soldier: &Soldier,
         camera: &Camera,
         elapsed: f64,
         frame_percent: f32,
@@ -38,21 +37,35 @@ impl GameGraphics {
 
         self.batch.clear();
 
-        render_soldier(
-            soldier,
-            &self.soldier_graphics,
-            &self.sprites,
-            &mut self.batch,
-            frame_percent,
-            world.config.realistic_mode,
-        );
+        for soldier in world.soldiers.values() {
+            render_soldier(
+                soldier,
+                &self.soldier_graphics,
+                &self.sprites,
+                &mut self.batch,
+                frame_percent,
+                world.config.realistic_mode,
+            );
+        }
 
         if false {
             let px = h / mq::window::screen_size().1;
-            render_skeleton(soldier, &mut self.batch, px, frame_percent);
+            for soldier in world.soldiers.values() {
+                render_skeleton(soldier, &mut self.batch, px, frame_percent);
+            }
         }
 
-        for bullet in &world.bullets {
+        for thing in world.things.iter().filter(|t| t.active) {
+            render_thing(
+                thing,
+                &world.config.weapons,
+                &self.sprites,
+                &mut self.batch,
+                frame_percent,
+            );
+        }
+
+        for bullet in world.bullets.iter().filter(|b| b.active) {
             render_bullet(
                 bullet,
                 &self.sprites,

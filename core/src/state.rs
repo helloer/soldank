@@ -13,4 +13,6 @@ pub enum Team {
 #[derive(Debug, Copy, Clone)]
 pub enum EmitterItem {
     Bullet(BulletParams),
+    /// The soldier killed itself (fall damage).
+    Died(DeathKind),
 }

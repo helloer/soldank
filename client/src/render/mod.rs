@@ -5,12 +5,14 @@ pub mod game;
 pub mod gfx;
 pub mod map;
 pub mod soldiers;
+pub mod things;
 
 pub use self::game::GameGraphics;
 
 use self::bullets::*;
 use self::map::*;
 use self::soldiers::*;
+use self::things::*;
 use gfx2d::math::Mat2d;
 use gfx2d::*;
 
