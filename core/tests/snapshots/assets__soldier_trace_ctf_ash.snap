@@ -1,0 +1,33 @@
+---
+source: core/tests/assets.rs
+expression: out
+---
+  0: pos ( -286.00,  -289.94) vel (  0.00,   0.06) legs Fall/2 body Stand/1 ground false bullets 0
+ 15: pos ( -286.00,  -282.23) vel (  0.00,   0.88) legs Fall/7 body Stand/6 ground false bullets 0
+ 30: pos ( -286.00,  -263.01) vel ( -0.00,   0.00) legs Fall/7 body Stand/11 ground true bullets 0
+ 45: pos ( -286.00,  -262.95) vel (  0.00,   0.00) legs Fall/2 body Stand/16 ground false bullets 0
+ 60: pos ( -286.00,  -262.94) vel (  0.00,   0.00) legs Fall/2 body Stand/4 ground false bullets 0
+ 75: pos ( -286.00,  -262.94) vel (  0.00,   0.00) legs Fall/2 body Stand/9 ground false bullets 0
+ 90: pos ( -286.00,  -262.93) vel (  0.00,   0.00) legs Run/2 body Stand/14 ground false bullets 0
+105: pos ( -277.41,  -262.96) vel (  1.04,   0.01) legs Run/17 body Stand/2 ground true bullets 0
+120: pos ( -263.66,  -262.99) vel (  0.11,  -0.04) legs Run/32 body Stand/7 ground true bullets 0
+135: pos ( -262.54,  -262.96) vel (  0.11,  -0.00) legs Run/9 body Stand/12 ground true bullets 0
+150: pos ( -261.92,  -262.88) vel ( -0.02,   0.00) legs JumpSide/2 body Stand/17 ground true bullets 0
+165: pos ( -264.14,  -273.26) vel ( -0.06,  -0.90) legs JumpSide/17 body Stand/5 ground false bullets 0
+180: pos ( -263.41,  -278.96) vel (  0.23,   0.06) legs Run/12 body Stand/10 ground false bullets 0
+195: pos ( -262.20,  -278.01) vel (  0.10,  -0.02) legs Run/27 body Stand/15 ground false bullets 0
+210: pos ( -264.57,  -279.16) vel ( -0.37,  -0.28) legs Run/2 body Stand/3 ground false bullets 0
+225: pos ( -273.12,  -287.72) vel ( -0.73,  -0.80) legs Run/2 body Stand/8 ground false bullets 0
+240: pos ( -286.77,  -303.48) vel ( -1.04,  -1.24) legs Run/2 body Stand/13 ground false bullets 0
+255: pos ( -304.80,  -325.43) vel ( -1.31,  -1.62) legs Run/2 body Stand/1 ground false bullets 0
+270: pos ( -324.70,  -346.51) vel ( -0.95,  -0.14) legs Fall/7 body Stand/6 ground false bullets 4
+285: pos ( -336.05,  -340.54) vel ( -0.15,   0.81) legs Fall/7 body Stand/11 ground false bullets 4
+300: pos ( -338.20,  -322.30) vel ( -0.13,   1.53) legs Fall/7 body Stand/16 ground false bullets 2
+315: pos ( -339.14,  -294.41) vel ( -0.11,   2.15) legs Crouch/10 body Aim/5 ground false bullets 0
+330: pos ( -340.73,  -257.49) vel ( -0.10,   2.68) legs Prone/2 body Prone/2 ground false bullets 0
+345: pos ( -342.10,  -213.14) vel ( -0.08,   3.13) legs Prone/17 body Prone/17 ground false bullets 0
+360: pos ( -339.34,  -162.20) vel (  0.51,   3.52) legs GetUp/17 body GetUp/17 ground false bullets 0
+375: pos ( -332.27,  -106.14) vel (  0.43,   3.85) legs Fall/7 body Stand/3 ground false bullets 0
+390: pos ( -328.92,   -73.70) vel (  0.00,   0.40) legs Fall/7 body Stand/8 ground false bullets 0
+405: pos ( -328.92,   -71.67) vel (  0.00,   0.00) legs Stand/2 body Stand/13 ground true bullets 0
+bullets fired: 80

@@ -1,6 +1,6 @@
 
 /target
-/gfx2d/target
+/soldat.smod
 **/*.rs.bk
 assets
 assets/*

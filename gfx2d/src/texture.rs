@@ -3,7 +3,6 @@ use miniquad::{
     FilterMode, MipmapFilterMode, RenderingBackend, TextureFormat, TextureId, TextureParams,
     TextureWrap,
 };
-use std::path::Path;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum FilterMethod {
@@ -24,20 +23,14 @@ pub struct Texture {
 }
 
 impl Texture {
-    pub fn load<P>(
+    /// Creates a texture from a decoded image, applying the color key and premultiplying alpha.
+    pub fn from_image(
         g: &mut Gfx2dContext,
-        fname: P,
+        mut img: image::RgbaImage,
         filter: FilterMethod,
         wrap: WrapMode,
         color_key: Option<Color>,
-    ) -> Texture
-    where
-        P: AsRef<Path>,
-    {
-        // TODO: handle image loading errors?
-
-        let mut img = load_image_rgba(fname);
-
+    ) -> Texture {
         if let Some(color) = color_key {
             remove_color_key(&mut img, color);
         }
@@ -108,8 +101,9 @@ pub(crate) fn create_texture(
     }
 }
 
-pub fn load_image_rgba<P: AsRef<Path>>(filename: P) -> image::RgbaImage {
-    image::open(filename).unwrap().into_rgba8()
+/// Decodes an image file (png, bmp, jpg, gif, ...) from memory.
+pub fn decode_image_rgba(data: &[u8]) -> image::ImageResult<image::RgbaImage> {
+    Ok(image::load_from_memory(data)?.into_rgba8())
 }
 
 pub fn premultiply_image(img: &mut image::RgbaImage) {

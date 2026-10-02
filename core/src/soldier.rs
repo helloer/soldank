@@ -1,9 +1,7 @@
 use super::*;
-use gfx2d::mq::{KeyCode, MouseButton};
-use std::sync::LazyLock;
+use std::sync::Arc;
 
 const SLIDELIMIT: f32 = 0.2;
-const GRAV: f32 = 0.06;
 const SURFACECOEFX: f32 = 0.970;
 const SURFACECOEFY: f32 = 0.970;
 const CROUCHMOVESURFACECOEFX: f32 = 0.85;
@@ -17,10 +15,6 @@ const POS_PRONE: u8 = 3;
 
 const MAX_VELOCITY: f32 = 11.0;
 const SOLDIER_COL_RADIUS: f32 = 3.0;
-
-static SOLDIER_SKELETON: LazyLock<ParticleSystem> = LazyLock::new(|| {
-    ParticleSystem::load_from_file("gostek.po", 4.5, 1.0, 1.06 * GRAV, 0.0, 0.9945)
-});
 
 #[allow(dead_code)]
 pub struct Soldier {
@@ -56,13 +50,10 @@ pub struct Soldier {
     pub weapons: [Weapon; 3],
     pub fired: u8,
     pub particle: Particle,
+    pub anims: Arc<Animations>,
 }
 
 impl Soldier {
-    pub fn initialize() {
-        LazyLock::force(&SOLDIER_SKELETON);
-    }
-
     pub fn primary_weapon(&self) -> &Weapon {
         &self.weapons[self.active_weapon]
     }
@@ -83,29 +74,7 @@ impl Soldier {
         // burst_count = 0;
     }
 
-    pub fn update_keys(&mut self, keycode: KeyCode, pressed: bool) {
-        match keycode {
-            KeyCode::A => self.control.left = pressed,
-            KeyCode::D => self.control.right = pressed,
-            KeyCode::W => self.control.up = pressed,
-            KeyCode::S => self.control.down = pressed,
-            KeyCode::Q => self.control.change = pressed,
-            KeyCode::E => self.control.throw = pressed,
-            KeyCode::F => self.control.drop = pressed,
-            KeyCode::X => self.control.prone = pressed,
-            _ => {}
-        }
-    }
-
-    pub fn update_mouse_button(&mut self, button: MouseButton, pressed: bool) {
-        match button {
-            MouseButton::Left => self.control.fire = pressed,
-            MouseButton::Right => self.control.jets = pressed,
-            _ => (),
-        }
-    }
-
-    pub fn new(spawn: &MapSpawnpoint) -> Soldier {
+    pub fn new(spawn: &MapSpawnpoint, data: &GameData) -> Soldier {
         let particle = Particle {
             active: true,
             pos: vec2(spawn.x as f32, spawn.y as f32),
@@ -148,9 +117,10 @@ impl Soldier {
             on_fire: 0,
             collider_distance: 255,
             half_dead: false,
-            skeleton: SOLDIER_SKELETON.clone(),
-            legs_animation: AnimState::new(Anim::Stand),
-            body_animation: AnimState::new(Anim::Stand),
+            skeleton: data.soldier_skeleton.clone(),
+            legs_animation: data.anims.state(Anim::Stand),
+            body_animation: data.anims.state(Anim::Stand),
+            anims: data.anims.clone(),
             control: Default::default(),
             active_weapon: 0,
             weapons,
@@ -163,14 +133,14 @@ impl Soldier {
         if !self.legs_animation.is_any(&[Anim::Prone, Anim::ProneMove])
             && self.legs_animation.id != id
         {
-            self.legs_animation = AnimState::new(id);
+            self.legs_animation = self.anims.state(id);
             self.legs_animation.frame = frame;
         }
     }
 
     pub fn body_apply_animation(&mut self, id: Anim, frame: usize) {
         if self.body_animation.id != id {
-            self.body_animation = AnimState::new(id);
+            self.body_animation = self.anims.state(id);
             self.body_animation.frame = frame;
         }
     }
@@ -184,13 +154,12 @@ impl Soldier {
         }
     }
 
-    pub fn update(&mut self, state: &MainState, emitter: &mut Vec<EmitterItem>) {
-        let map = &state.map;
+    pub fn update(&mut self, map: &MapFile, config: &WorldConfig, emitter: &mut Vec<EmitterItem>) {
         let mut body_y = 0.0;
         let mut arm_s;
 
         self.particle.euler();
-        self.control(state, emitter);
+        self.control(config, emitter);
 
         *self.skeleton.old_pos_mut(21) = self.skeleton.pos(21);
         *self.skeleton.old_pos_mut(23) = self.skeleton.pos(23);
@@ -245,13 +214,13 @@ impl Soldier {
                 let mut pos = Vec2::ZERO;
                 *self.skeleton.old_pos_mut(i) = self.skeleton.pos(i);
 
-                if !self.half_dead && ((i >= 1 && i <= 6) || (i == 17) || (i == 18)) {
+                if !self.half_dead && ((1..=6).contains(&i) || (i == 17) || (i == 18)) {
                     let anim_pos = self.legs_animation.pos(i);
                     pos.x = self.particle.pos.x + anim_pos.x * f32::from(self.direction);
                     pos.y = self.particle.pos.y + anim_pos.y;
                 }
 
-                if i >= 7 && i <= 16 || i == 19 || i == 20 {
+                if (7..=16).contains(&i) || i == 19 || i == 20 {
                     let anim_pos = self.body_animation.pos(i);
                     pos.x = self.particle.pos.x + anim_pos.x * f32::from(self.direction);
                     pos.y = self.particle.pos.y + anim_pos.y;
@@ -421,18 +390,11 @@ impl Soldier {
             //CheckSkeletonOutOfBounds;
         }
 
-        if self.particle.velocity.x > MAX_VELOCITY {
-            self.particle.velocity.x = MAX_VELOCITY;
-        }
-        if self.particle.velocity.x < -MAX_VELOCITY {
-            self.particle.velocity.x = -MAX_VELOCITY;
-        }
-        if self.particle.velocity.y > MAX_VELOCITY {
-            self.particle.velocity.y = MAX_VELOCITY;
-        }
-        if self.particle.velocity.y < -MAX_VELOCITY {
-            self.particle.velocity.y = MAX_VELOCITY;
-        }
+        // safety (Sprites.pas clamps both axes symmetrically)
+        self.particle.velocity = self
+            .particle
+            .velocity
+            .clamp(Vec2::splat(-MAX_VELOCITY), Vec2::splat(MAX_VELOCITY));
     }
 
     pub fn check_map_collision(&mut self, map: &MapFile, x: f32, y: f32, area: i32) -> bool {
@@ -446,8 +408,8 @@ impl Soldier {
                 let polytype = map.polygons[poly].polytype;
 
                 if polytype != PolyType::NoCollide && polytype != PolyType::OnlyBulletsCollide {
-                    let mut polygons = map.polygons[poly];
-                    if map.point_in_poly(pos, &mut polygons) {
+                    let polygons = map.polygons[poly];
+                    if map.point_in_poly(pos, &polygons) {
                         self.handle_special_polytypes(map, polytype, pos);
 
                         let mut dist = 0.0;

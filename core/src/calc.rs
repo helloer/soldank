@@ -1,4 +1,12 @@
-pub use gfx2d::math::*;
+pub use glam::{Vec2, Vec3, vec2, vec3};
+pub use std::f32::consts::PI;
+
+/// Angle in radians.
+pub type Rad = f32;
+
+pub fn rad(angle: f32) -> Rad {
+    angle
+}
 use std::ops::{Add, Mul, Sub};
 
 pub fn distance(p1: Vec2, p2: Vec2) -> f32 {

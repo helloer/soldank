@@ -16,10 +16,10 @@ fn is_prop_active(map: &MapFile, prop: &MapProp) -> bool {
 }
 
 fn is_background_poly(poly: &MapPolygon) -> bool {
-    match poly.polytype {
-        PolyType::Background | PolyType::BackgroundTransition => true,
-        _ => false,
-    }
+    matches!(
+        poly.polytype,
+        PolyType::Background | PolyType::BackgroundTransition
+    )
 }
 
 fn add_poly(batch: &mut DrawBatch, poly: &MapPolygon, texture: &Texture) {
@@ -96,13 +96,11 @@ impl MapGraphics {
         }
     }
 
-    pub fn new(context: &mut Gfx2dContext, map: &MapFile) -> MapGraphics {
-        let texture_file = filename_override("assets/textures", &map.texture_name);
-
-        let texture = if texture_file.exists() {
-            Texture::load(
+    pub fn new(context: &mut Gfx2dContext, vfs: &Vfs, map: &MapFile) -> MapGraphics {
+        let texture = if let (_, Some(image)) = load_image(vfs, "textures", &map.texture_name) {
+            Texture::from_image(
                 context,
-                &texture_file,
+                image,
                 FilterMethod::Trilinear,
                 WrapMode::Tile,
                 None,
@@ -145,24 +143,19 @@ impl MapGraphics {
                 .enumerate()
                 .filter(|&(i, _)| scenery_used[i])
                 .map(|(_, s)| {
-                    let fname = filename_override("assets/scenery-gfx", &s.filename);
+                    let (name, image) = load_image(vfs, "scenery-gfx", &s.filename);
 
-                    let color_key = match fname.extension() {
-                        Some(ext) => {
-                            if ext == "bmp" || ext == "gif" {
-                                Some(rgb(0, 255, 0))
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
+                    let color_key = if name.ends_with(".bmp") || name.ends_with(".gif") {
+                        Some(rgb(0, 255, 0))
+                    } else {
+                        None
                     };
 
-                    SpriteInfo::new(fname, vec2(1.0, 1.0), color_key)
+                    SpriteInfo::new(name, image, vec2(1.0, 1.0), color_key)
                 })
                 .collect();
 
-            Spritesheet::new(context, 8, FilterMethod::Trilinear, &scenery_info).sprites
+            Spritesheet::new(context, 8, FilterMethod::Trilinear, scenery_info).sprites
         };
 
         let props = {

@@ -1,0 +1,17 @@
+[package]
+name = "soldank"
+description = "Open source clone of the Soldat engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+soldank-core.workspace = true
+gfx2d.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+rust-ini.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

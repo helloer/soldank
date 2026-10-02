@@ -54,7 +54,7 @@ pub fn render_bullet(
                     }
                 };
 
-                let alpha = f32::max(50.0, f32::min(230.0, 255.0 * hit * scale.powi(2) / 4.63));
+                let alpha = (255.0 * hit * scale.powi(2) / 4.63).clamp(50.0, 230.0);
 
                 batch.add_sprite(
                     sprite,

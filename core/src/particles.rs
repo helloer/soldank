@@ -1,7 +1,4 @@
 use super::*;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
 
 // Notes:
 // * Particle & constraint vectors are kept private to prevent mismatch between
@@ -178,45 +175,49 @@ impl ParticleSystem {
         }
     }
 
-    pub fn load_from_file(
-        file_name: &str,
+    /// Parses a `.po` object: particle coordinates until `CONSTRAINTS`, then pairs of
+    /// `Pn` particle references until `ENDFILE`.
+    pub fn parse(
+        file: &str,
+        text: &str,
         scale: f32,
         timestep: f32,
         gravity: f32,
         e_damping: f32,
         v_damping: f32,
-    ) -> ParticleSystem {
-        let mut path = PathBuf::from("assets/objects/");
-        path.push(file_name);
-
-        let file = File::open(&path).expect("Error opening object file.");
-        let mut line = String::new();
-        let mut buf = BufReader::new(file);
+    ) -> Result<ParticleSystem, DataError> {
+        let mut lines = text.lines().map(str::trim);
         let mut particles: Vec<Particle> = Vec::new();
         let mut constraints: Vec<Constraint> = Vec::new();
 
-        let read_line = |buf: &mut BufReader<File>, line: &mut String| {
-            line.clear();
-            buf.read_line(line).ok();
+        let error = |what: &str, line: Option<&str>| {
+            DataError::parse(file, format!("expected {what}, got {line:?}"))
         };
 
-        let read_f32 = |buf: &mut BufReader<File>, line: &mut String| -> f32 {
-            read_line(buf, line);
-            line.trim().parse().unwrap()
+        let number = |lines: &mut dyn Iterator<Item = &str>| -> Result<f32, DataError> {
+            let line = lines.next();
+            line.and_then(|l| l.parse().ok())
+                .ok_or_else(|| error("a number", line))
         };
 
-        let read_index = |line: &str| -> usize {
-            let mut chars = line.chars();
-            chars.next();
-            chars.as_str().trim().parse().unwrap()
+        // particle references look like "P12"
+        let index = |line: Option<&str>, count: usize| -> Result<usize, DataError> {
+            line.and_then(|l| l.get(1..))
+                .and_then(|l| l.trim().parse().ok())
+                .filter(|i| (1..=count).contains(i))
+                .ok_or_else(|| error("a particle reference", line))
         };
 
-        read_line(&mut buf, &mut line);
+        loop {
+            match lines.next() {
+                Some("CONSTRAINTS") => break,
+                None => return Err(error("CONSTRAINTS", None)),
+                Some(_) => {}
+            }
 
-        while line.trim() != "CONSTRAINTS" {
-            let x = read_f32(&mut buf, &mut line);
-            let _ = read_f32(&mut buf, &mut line);
-            let z = read_f32(&mut buf, &mut line);
+            let x = number(&mut lines)?;
+            let _y = number(&mut lines)?;
+            let z = number(&mut lines)?;
             let p = vec2(-x * scale / 1.2, -z * scale);
 
             particles.push(Particle {
@@ -231,31 +232,23 @@ impl ParticleSystem {
                 e_damping,
                 v_damping,
             });
-
-            read_line(&mut buf, &mut line);
         }
 
         loop {
-            let pa_num = {
-                read_line(&mut buf, &mut line);
-                if line.is_empty() || line.trim() == "ENDFILE" {
-                    break;
-                }
-                read_index(&line)
+            let pa_num = match lines.next() {
+                None | Some("") | Some("ENDFILE") => break,
+                line => index(line, particles.len())?,
             };
 
-            let pb_num = {
-                read_line(&mut buf, &mut line);
-                read_index(&line)
-            };
+            let pb_num = index(lines.next(), particles.len())?;
 
             let delta = particles[pa_num - 1].pos - particles[pb_num - 1].pos;
             constraints.push(Constraint::new(pa_num, pb_num, delta.length()));
         }
 
-        ParticleSystem {
+        Ok(ParticleSystem {
             particles,
             constraints,
-        }
+        })
     }
 }

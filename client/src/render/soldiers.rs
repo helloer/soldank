@@ -14,10 +14,7 @@ pub enum SoldierSprite {
 
 impl SoldierSprite {
     pub fn is_none(&self) -> bool {
-        match *self {
-            SoldierSprite::None => true,
-            _ => false,
-        }
+        matches!(self, SoldierSprite::None)
     }
 }
 
@@ -47,6 +44,7 @@ pub struct SoldierPartInfo {
     pub center: (f32, f32),
     pub flexibility: f32,
     pub flip: bool,
+    #[allow(dead_code)] // TODO: team-specific gostek parts
     pub team: bool,
     pub color: SoldierColor,
     pub alpha: SoldierAlpha,
@@ -63,7 +61,7 @@ impl SoldierGraphics {
         SoldierGraphics {
             parts: SoldierPart::data().to_vec(),
             base_visibility: std::array::from_fn(|i| {
-                SoldierPart::data().get(i).map_or(false, |p| p.visible)
+                SoldierPart::data().get(i).is_some_and(|p| p.visible)
             }),
         }
     }
@@ -111,9 +109,10 @@ pub fn render_soldier(
     sprites: &[Vec<Sprite>],
     batch: &mut DrawBatch,
     frame_percent: f32,
+    realistic_mode: bool,
 ) {
     let sk = &soldier.skeleton;
-    let (colors, alpha) = colors_and_alpha(soldier);
+    let (colors, alpha) = colors_and_alpha(soldier, realistic_mode);
     let has_blood = alpha[SoldierAlpha::Blood as usize] > 0;
     let visible = parts_visibility(&soldier_graphics.base_visibility, soldier, has_blood);
 
@@ -176,9 +175,9 @@ pub fn render_soldier(
     }
 }
 
-fn colors_and_alpha(soldier: &Soldier) -> ([Color; 7], [u8; 3]) {
+fn colors_and_alpha(soldier: &Soldier, realistic_mode: bool) -> ([Color; 7], [u8; 3]) {
     let mut alpha_base = soldier.alpha;
-    let mut alpha_blood = f32::max(0.0, f32::min(255.0, 200.0 - soldier.health.round())) as u8;
+    let mut alpha_blood = (200.0 - soldier.health.round()).clamp(0.0, 255.0) as u8;
     let mut color_cygar = rgb(255, 255, 255);
     let color_none = rgb(255, 255, 255);
     let color_main = rgb(0, 0, 0); // TODO: Player.Color1
@@ -186,13 +185,10 @@ fn colors_and_alpha(soldier: &Soldier) -> ([Color; 7], [u8; 3]) {
     let color_skin = rgb(230, 180, 120); // TODO: Player.SkinColor
     let color_hair = rgb(0, 0, 0); // TODO: Player.HairColor
     let color_headblood = rgb(172, 169, 168);
-    let alpha_nades: u8;
 
     if soldier.has_cigar == 5 {
         color_cygar = rgb(97, 97, 97);
     }
-
-    let realistic_mode = false; // TODO: use real value
 
     if soldier.health > (90.0 - 40.0 * f32::from(realistic_mode as u8)) {
         alpha_blood = 0;
@@ -205,7 +201,7 @@ fn colors_and_alpha(soldier: &Soldier) -> ([Color; 7], [u8; 3]) {
         alpha_blood = 0;
     }
 
-    alpha_nades = (0.75 * f32::from(alpha_base)).round() as u8;
+    let alpha_nades: u8 = (0.75 * f32::from(alpha_base)).round() as u8;
 
     (
         [
@@ -410,8 +406,8 @@ pub fn render_skeleton(soldier: &Soldier, batch: &mut DrawBatch, px: f32, frame_
     let sk = &soldier.skeleton;
 
     for constraint in sk.constraints() {
-        let pa = constraint.particle_num.0 as usize;
-        let pb = constraint.particle_num.1 as usize;
+        let pa = constraint.particle_num.0;
+        let pb = constraint.particle_num.1;
 
         let a = lerp(sk.old_pos(pa), sk.pos(pa), frame_percent);
         let b = lerp(sk.old_pos(pb), sk.pos(pb), frame_percent);
@@ -442,10 +438,10 @@ pub fn render_skeleton(soldier: &Soldier, batch: &mut DrawBatch, px: f32, frame_
         batch.add_quad(
             None,
             &[
-                vertex(m * vec2(-1.0 * px, -1.0 * px), Vec2::ZERO, rgb(0, 0, 255)),
-                vertex(m * vec2(1.0 * px, -1.0 * px), Vec2::ZERO, rgb(0, 0, 255)),
+                vertex(m * vec2(-px, -px), Vec2::ZERO, rgb(0, 0, 255)),
+                vertex(m * vec2(1.0 * px, -px), Vec2::ZERO, rgb(0, 0, 255)),
                 vertex(m * vec2(1.0 * px, 1.0 * px), Vec2::ZERO, rgb(0, 0, 255)),
-                vertex(m * vec2(-1.0 * px, 1.0 * px), Vec2::ZERO, rgb(0, 0, 255)),
+                vertex(m * vec2(-px, 1.0 * px), Vec2::ZERO, rgb(0, 0, 255)),
             ],
         );
     }

@@ -1,0 +1,12 @@
+---
+source: core/tests/assets.rs
+expression: out
+---
+skeleton particles: 24
+skeleton constraints: 30
+Stand: 17 frames
+Run: 38 frames
+Jump: 37 frames
+Prone: 27 frames
+Roll: 34 frames
+Change: 40 frames

@@ -1,0 +1,16 @@
+---
+source: core/tests/assets.rs
+expression: out
+---
+name: ctf_Ash by chakapoko maker
+texture: riverbed.bmp
+polygons: 209
+sectors: 25 x 58
+props: 101
+scenery: 26
+colliders: 20
+spawnpoints: 20
+  (-286, -290) team 1
+  (-492, -97) team 1
+  (-390, -199) team 7
+  (-505, -200) team 8

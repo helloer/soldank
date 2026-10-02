@@ -1,7 +1,8 @@
 use super::*;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
 pub enum BulletStyle {
+    #[default]
     Bullet = 1,
     FragGrenade = 2,
     GaugeBullet = 3,
@@ -27,7 +28,7 @@ pub struct BulletParams {
     pub timeout: i16,
     pub hit_multiply: f32,
     pub team: Team,
-    pub sprite: Option<gfx::Weapon>,
+    pub sprite: Option<sprites::Weapon>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -45,13 +46,7 @@ pub struct Bullet {
     pub hit_multiply: f32,
     pub hit_multiply_prev: f32,
     pub degrade_count: usize,
-    pub sprite: Option<gfx::Weapon>,
-}
-
-impl Default for BulletStyle {
-    fn default() -> BulletStyle {
-        BulletStyle::Bullet
-    }
+    pub sprite: Option<sprites::Weapon>,
 }
 
 impl Bullet {

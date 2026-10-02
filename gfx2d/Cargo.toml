@@ -1,10 +1,12 @@
 [package]
 name = "gfx2d"
-version = "0.1.0"
 authors = ["Mariano Cuatrin <mariano.cuatrin@gmail.com>"]
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-miniquad = "0.4.11"
-glam = "0.33"
-image = "0.25"
+glam.workspace = true
+image.workspace = true
+miniquad.workspace = true

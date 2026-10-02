@@ -16,6 +16,7 @@ pub use color::rgba;
 pub use context::Gfx2dContext;
 pub use context::Vertex;
 pub use context::vertex;
+pub use image;
 pub use miniquad as mq;
 pub use spritesheet::Sprite;
 pub use spritesheet::SpriteInfo;
@@ -26,7 +27,7 @@ pub use texture::WrapMode;
 pub use transform::Transform;
 
 pub mod gfx2d_extra {
-    pub use super::texture::load_image_rgba;
+    pub use super::texture::decode_image_rgba;
     pub use super::texture::premultiply_image;
     pub use super::texture::remove_color_key;
 }

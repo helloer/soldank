@@ -1,7 +1,6 @@
 use super::*;
 use crate::binpack::{self, pack_rects};
 use image::{GenericImage, RgbaImage as Image};
-use std::path::PathBuf;
 
 type Rect = binpack::Rect<(usize, usize)>;
 
@@ -16,15 +15,24 @@ pub struct Sprite {
 
 #[derive(Debug)]
 pub struct SpriteInfo {
-    pub filename: PathBuf,
+    /// Asset path, used for identification (e.g. scale lookups) and diagnostics.
+    pub name: String,
+    /// Decoded image; `None` produces an empty 1x1 sprite.
+    pub image: Option<Image>,
     pub pixel_ratio: Vec2,
     pub color_key: Option<Color>,
 }
 
 impl SpriteInfo {
-    pub fn new(filename: PathBuf, pixel_ratio: Vec2, color_key: Option<Color>) -> SpriteInfo {
+    pub fn new(
+        name: String,
+        image: Option<Image>,
+        pixel_ratio: Vec2,
+        color_key: Option<Color>,
+    ) -> SpriteInfo {
         SpriteInfo {
-            filename,
+            name,
+            image,
             pixel_ratio,
             color_key,
         }
@@ -79,7 +87,7 @@ impl Spritesheet {
         context: &mut Gfx2dContext,
         padding: i32,
         filter: FilterMethod,
-        info: &[SpriteInfo],
+        info: Vec<SpriteInfo>,
     ) -> Spritesheet {
         if info.is_empty() {
             return Spritesheet::empty();
@@ -90,12 +98,10 @@ impl Spritesheet {
         let mut sprites: Vec<Sprite> = Vec::with_capacity(info.len());
         let mut rects: Vec<Rect> = Vec::with_capacity(info.len());
 
-        for (index, sprite_info) in info.iter().enumerate() {
-            let mut img = if sprite_info.filename.exists() {
-                gfx2d_extra::load_image_rgba(&sprite_info.filename)
-            } else {
-                Image::from_pixel(1, 1, image::Rgba([0u8; 4]))
-            };
+        for (index, sprite_info) in info.into_iter().enumerate() {
+            let mut img = sprite_info
+                .image
+                .unwrap_or_else(|| Image::from_pixel(1, 1, image::Rgba([0u8; 4])));
 
             if let Some(color) = sprite_info.color_key {
                 gfx2d_extra::remove_color_key(&mut img, color);

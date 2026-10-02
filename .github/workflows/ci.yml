@@ -33,7 +33,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   build:
     name: Build & test (${{ matrix.os }})
@@ -48,3 +48,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
+
+  assets-tests:
+    name: Tests with game assets
+    runs-on: ubuntu-latest
+    env:
+      BASE_ASSETS_VERSION: v0.4
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache soldat.smod
+        id: smod-cache
+        uses: actions/cache@v6
+        with:
+          path: soldat.smod
+          key: soldat-smod-${{ env.BASE_ASSETS_VERSION }}
+      - name: Download soldat.smod from opensoldat/base
+        if: steps.smod-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$BASE_ASSETS_VERSION" --repo opensoldat/base --pattern soldat.smod
+      - run: cargo test --workspace --locked
+        env:
+          SOLDANK_ASSETS: ${{ github.workspace }}/soldat.smod
+          SOLDANK_REQUIRE_ASSETS: "1"

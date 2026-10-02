@@ -1,0 +1,20 @@
+[package]
+name = "soldank-core"
+description = "Soldank game simulation, asset filesystem and console configuration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitflags.workspace = true
+byteorder.workspace = true
+glam.workspace = true
+slotmap.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+tempfile.workspace = true

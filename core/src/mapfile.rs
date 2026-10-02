@@ -1,9 +1,7 @@
 use super::*;
+use crate::assets::Vfs;
 use byteorder::{LittleEndian, ReadBytesExt};
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufReader, Read};
-use std::path::PathBuf;
+use std::io::{self, Cursor, Read};
 
 const MAX_POLYS: i32 = 5000;
 //const MIN_SECTOR: i32 = -25;
@@ -70,7 +68,7 @@ pub struct MapVertex {
 #[derive(Debug, Copy, Clone)]
 pub struct MapPolygon {
     pub vertices: [MapVertex; 3],
-    normals: [Vec3; 3],
+    pub normals: [Vec3; 3],
     pub polytype: PolyType,
     pub bounciness: f32,
 }
@@ -99,15 +97,15 @@ pub struct MapProp {
 #[derive(Debug)]
 pub struct MapScenery {
     pub filename: String,
-    date: i32,
+    pub date: i32,
 }
 
 #[derive(Debug)]
 pub struct MapCollider {
-    active: bool,
-    x: f32,
-    y: f32,
-    radius: f32,
+    pub active: bool,
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
 }
 
 #[derive(Debug)]
@@ -136,11 +134,12 @@ pub struct MapFile {
     pub sectors_division: i32,
     pub sectors_num: i32,
     pub sectors: Vec<MapSector>,
+    /// Sector polygon lists as a 51x51 grid indexed by [x + 25][y + 25].
+    pub sectors_poly: Vec<Vec<MapSector>>,
     pub props: Vec<MapProp>,
     pub scenery: Vec<MapScenery>,
     pub colliders: Vec<MapCollider>,
     pub spawnpoints: Vec<MapSpawnpoint>,
-    pub sectors_poly: Vec<Vec<MapSector>>,
     pub perps: Vec<[Vec2; 3]>,
 }
 
@@ -167,48 +166,48 @@ impl MapPolygon {
 }
 
 impl MapFile {
-    pub fn load_map_file(file_name: &str) -> MapFile {
-        let mut path = PathBuf::new();
-        path.push("assets/maps/");
-        path.push(file_name);
-        let file = File::open(&path).expect("Error opening File");
-        let mut buf = BufReader::new(file);
+    /// Loads `maps/<name>.pms` from the asset filesystem.
+    pub fn load(vfs: &Vfs, name: &str) -> Result<MapFile, DataError> {
+        let path = format!("maps/{name}.pms");
+        let data = vfs.read(&path)?;
+        MapFile::parse(&path, &data)
+    }
 
-        let filename = path.to_string_lossy().into_owned();
-        let version = buf.read_i32::<LittleEndian>().unwrap();
-        let mapname = read_string(&mut buf, 38).ok().unwrap();
-        let texture_name = read_string(&mut buf, 24).ok().unwrap();
-        let bg_color_top = read_color(&mut buf);
-        let bg_color_bottom = read_color(&mut buf);
-        let start_jet = buf.read_i32::<LittleEndian>().unwrap();
-        let grenade_packs = buf.read_u8().unwrap();
-        let medikits = buf.read_u8().unwrap();
-        let weather = buf.read_u8().unwrap();
-        let steps = buf.read_u8().unwrap();
-        let random_id = buf.read_i32::<LittleEndian>().unwrap();
+    /// Parses a `.pms` map.
+    pub fn parse(filename: &str, data: &[u8]) -> Result<MapFile, DataError> {
+        Self::read(filename, &mut Cursor::new(data))
+            .map_err(|e| DataError::parse(filename, e.to_string()))
+    }
 
-        let n = buf.read_i32::<LittleEndian>().unwrap();
-        if (n > MAX_POLYS) || (n < 0) {
-            panic!("Wrong PMS data (number of polygons)");
+    fn read(filename: &str, buf: &mut Cursor<&[u8]>) -> io::Result<MapFile> {
+        let filename = filename.to_owned();
+        let version = buf.read_i32::<LittleEndian>()?;
+        let mapname = read_string(buf, 38)?;
+        let texture_name = read_string(buf, 24)?;
+        let bg_color_top = read_color(buf)?;
+        let bg_color_bottom = read_color(buf)?;
+        let start_jet = buf.read_i32::<LittleEndian>()?;
+        let grenade_packs = buf.read_u8()?;
+        let medikits = buf.read_u8()?;
+        let weather = buf.read_u8()?;
+        let steps = buf.read_u8()?;
+        let random_id = buf.read_i32::<LittleEndian>()?;
+
+        let n = buf.read_i32::<LittleEndian>()?;
+        if !(0..=MAX_POLYS).contains(&n) {
+            return Err(invalid("Wrong PMS data (number of polygons)"));
         }
 
         let mut polygons: Vec<MapPolygon> = Vec::new();
         let mut perps = Vec::new();
 
         for _i in 0..n {
-            let vertices: [MapVertex; 3] = [
-                read_vertex(&mut buf),
-                read_vertex(&mut buf),
-                read_vertex(&mut buf),
-            ];
+            let vertices: [MapVertex; 3] =
+                [read_vertex(buf)?, read_vertex(buf)?, read_vertex(buf)?];
 
-            let normals: [Vec3; 3] = [
-                read_vec3(&mut buf),
-                read_vec3(&mut buf),
-                read_vec3(&mut buf),
-            ];
+            let normals: [Vec3; 3] = [read_vec3(buf)?, read_vec3(buf)?, read_vec3(buf)?];
 
-            let polytype = buf.read_u8().unwrap();
+            let polytype = buf.read_u8()?;
 
             fn poly_to_enum(id: u8) -> PolyType {
                 match id {
@@ -263,18 +262,18 @@ impl MapFile {
             perps.push(perp);
         }
 
-        let sectors_division = buf.read_i32::<LittleEndian>().unwrap();
-        let sectors_num = buf.read_i32::<LittleEndian>().unwrap();
+        let sectors_division = buf.read_i32::<LittleEndian>()?;
+        let sectors_num = buf.read_i32::<LittleEndian>()?;
 
-        if (sectors_num > MAX_SECTOR) || (sectors_num < 0) {
-            panic!("Wrong PMS data (number of sectors)");
+        if !(0..=MAX_SECTOR).contains(&sectors_num) {
+            return Err(invalid("Wrong PMS data (number of sectors)"));
         }
 
         let n = (2 * sectors_num + 1) * (2 * sectors_num + 1);
         let mut sectors: Vec<MapSector> = Vec::new();
 
         for _i in 0..n {
-            let m = buf.read_u16::<LittleEndian>().unwrap();
+            let m = buf.read_u16::<LittleEndian>()?;
 
             if i32::from(m) > MAX_POLYS {
                 break;
@@ -283,47 +282,40 @@ impl MapFile {
             let mut polys: Vec<u16> = Vec::new();
 
             for _j in 0..m {
-                polys.push(buf.read_u16::<LittleEndian>().unwrap());
+                polys.push(buf.read_u16::<LittleEndian>()?);
             }
 
             sectors.push(MapSector { polys });
         }
 
-        let mut k = 0;
-        let sector = MapSector { polys: Vec::new() };
-        let sectores = vec![sector.clone(); 51];
-        let mut sectored = vec![sectores.clone(); 51];
-
-        for sec_i in sectored.iter_mut().take(51) {
-            for sec_ij in sec_i.iter_mut().take(51) {
-                *sec_ij = sectors[k].clone();
-                k += 1;
-            }
+        if sectors.len() != 51 * 51 {
+            return Err(invalid("Wrong PMS data (expected 51x51 sectors)"));
         }
 
-        let sectors_poly = sectored;
+        let sectors_poly: Vec<Vec<MapSector>> =
+            sectors.chunks(51).map(<[MapSector]>::to_vec).collect();
 
-        let n = buf.read_i32::<LittleEndian>().unwrap();
-        if (n > MAX_PROPS) || (n < 0) {
-            panic!("Wrong PMS data (number of props)");
+        let n = buf.read_i32::<LittleEndian>()?;
+        if !(0..=MAX_PROPS).contains(&n) {
+            return Err(invalid("Wrong PMS data (number of props)"));
         }
 
         let mut props: Vec<MapProp> = Vec::new();
 
         for _i in 0..n {
-            let active = buf.read_u16::<LittleEndian>().unwrap() != 0;
-            let style = buf.read_u16::<LittleEndian>().unwrap();
-            let width = buf.read_i32::<LittleEndian>().unwrap();
-            let height = buf.read_i32::<LittleEndian>().unwrap();
-            let x = buf.read_f32::<LittleEndian>().unwrap();
-            let y = buf.read_f32::<LittleEndian>().unwrap();
-            let rotation = rad(buf.read_f32::<LittleEndian>().unwrap());
-            let scale_x = buf.read_f32::<LittleEndian>().unwrap();
-            let scale_y = buf.read_f32::<LittleEndian>().unwrap();
-            let alpha = buf.read_i32::<LittleEndian>().unwrap() as u8;
-            let mut color = read_color(&mut buf);
+            let active = buf.read_u16::<LittleEndian>()? != 0;
+            let style = buf.read_u16::<LittleEndian>()?;
+            let width = buf.read_i32::<LittleEndian>()?;
+            let height = buf.read_i32::<LittleEndian>()?;
+            let x = buf.read_f32::<LittleEndian>()?;
+            let y = buf.read_f32::<LittleEndian>()?;
+            let rotation = rad(buf.read_f32::<LittleEndian>()?);
+            let scale_x = buf.read_f32::<LittleEndian>()?;
+            let scale_y = buf.read_f32::<LittleEndian>()?;
+            let alpha = buf.read_i32::<LittleEndian>()? as u8;
+            let mut color = read_color(buf)?;
             color.a = alpha;
-            let level = buf.read_i32::<LittleEndian>().unwrap() as u8;
+            let level = buf.read_i32::<LittleEndian>()? as u8;
 
             props.push(MapProp {
                 active,
@@ -341,24 +333,24 @@ impl MapFile {
             });
         }
 
-        let n = buf.read_i32::<LittleEndian>().unwrap();
+        let n = buf.read_i32::<LittleEndian>()?;
         let mut scenery: Vec<MapScenery> = Vec::new();
 
         for _i in 0..n {
-            let filename = read_string(&mut buf, 50).ok().unwrap();
-            let date = buf.read_i32::<LittleEndian>().unwrap();
+            let filename = read_string(buf, 50)?;
+            let date = buf.read_i32::<LittleEndian>()?;
 
             scenery.push(MapScenery { filename, date });
         }
 
-        let n = buf.read_i32::<LittleEndian>().unwrap();
+        let n = buf.read_i32::<LittleEndian>()?;
         let mut colliders: Vec<MapCollider> = Vec::new();
 
         for _i in 0..n {
-            let active = buf.read_i32::<LittleEndian>().unwrap() != 0;
-            let x = buf.read_f32::<LittleEndian>().unwrap();
-            let y = buf.read_f32::<LittleEndian>().unwrap();
-            let radius = buf.read_f32::<LittleEndian>().unwrap();
+            let active = buf.read_i32::<LittleEndian>()? != 0;
+            let x = buf.read_f32::<LittleEndian>()?;
+            let y = buf.read_f32::<LittleEndian>()?;
+            let radius = buf.read_f32::<LittleEndian>()?;
 
             colliders.push(MapCollider {
                 active,
@@ -368,19 +360,19 @@ impl MapFile {
             });
         }
 
-        let n = buf.read_i32::<LittleEndian>().unwrap();
+        let n = buf.read_i32::<LittleEndian>()?;
         let mut spawnpoints: Vec<MapSpawnpoint> = Vec::new();
 
         for _i in 0..n {
-            let active = buf.read_i32::<LittleEndian>().unwrap() != 0;
-            let x = buf.read_i32::<LittleEndian>().unwrap();
-            let y = buf.read_i32::<LittleEndian>().unwrap();
-            let team = buf.read_i32::<LittleEndian>().unwrap();
+            let active = buf.read_i32::<LittleEndian>()? != 0;
+            let x = buf.read_i32::<LittleEndian>()?;
+            let y = buf.read_i32::<LittleEndian>()?;
+            let team = buf.read_i32::<LittleEndian>()?;
 
             spawnpoints.push(MapSpawnpoint { active, x, y, team });
         }
 
-        MapFile {
+        Ok(MapFile {
             filename,
             version,
             mapname,
@@ -397,13 +389,13 @@ impl MapFile {
             sectors_division,
             sectors_num,
             sectors,
+            sectors_poly,
             props,
             scenery,
             colliders,
             spawnpoints,
-            sectors_poly,
             perps,
-        }
+        })
     }
 
     pub fn point_in_poly(&self, p: Vec2, poly: &MapPolygon) -> bool {
@@ -534,13 +526,17 @@ impl MapFile {
     }
 }
 
-pub fn read_string<T: Read>(reader: &mut T, length: u32) -> Result<String, Box<dyn Error>> {
+fn invalid(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+pub fn read_string<T: Read>(reader: &mut T, length: u32) -> io::Result<String> {
     let mut buffer: Vec<u8>;
     let byte = reader.read_u8()?;
     buffer = vec![0u8; byte as usize];
     reader.read_exact(buffer.as_mut_slice())?;
 
-    let filler = length - u32::from(byte);
+    let filler = length.saturating_sub(u32::from(byte));
     for _i in 0..filler {
         let _ = reader.read_u8()?;
     }
@@ -550,23 +546,23 @@ pub fn read_string<T: Read>(reader: &mut T, length: u32) -> Result<String, Box<d
     Ok(x)
 }
 
-pub fn read_color<T: Read>(reader: &mut T) -> MapColor {
-    let b = reader.read_u8().unwrap();
-    let g = reader.read_u8().unwrap();
-    let r = reader.read_u8().unwrap();
-    let a = reader.read_u8().unwrap();
+pub fn read_color<T: Read>(reader: &mut T) -> io::Result<MapColor> {
+    let b = reader.read_u8()?;
+    let g = reader.read_u8()?;
+    let r = reader.read_u8()?;
+    let a = reader.read_u8()?;
 
-    MapColor { r, g, b, a }
+    Ok(MapColor { r, g, b, a })
 }
 
-pub fn read_vertex<T: Read>(reader: &mut T) -> MapVertex {
-    let pos = read_vec3(reader);
-    let rhw = reader.read_f32::<LittleEndian>().unwrap();
-    let color = read_color(reader);
-    let u = reader.read_f32::<LittleEndian>().unwrap();
-    let v = reader.read_f32::<LittleEndian>().unwrap();
+pub fn read_vertex<T: Read>(reader: &mut T) -> io::Result<MapVertex> {
+    let pos = read_vec3(reader)?;
+    let rhw = reader.read_f32::<LittleEndian>()?;
+    let color = read_color(reader)?;
+    let u = reader.read_f32::<LittleEndian>()?;
+    let v = reader.read_f32::<LittleEndian>()?;
 
-    MapVertex {
+    Ok(MapVertex {
         x: pos.x,
         y: pos.y,
         z: pos.z,
@@ -574,13 +570,13 @@ pub fn read_vertex<T: Read>(reader: &mut T) -> MapVertex {
         color,
         u,
         v,
-    }
+    })
 }
 
-pub fn read_vec3<T: Read>(reader: &mut T) -> Vec3 {
-    let x = reader.read_f32::<LittleEndian>().unwrap();
-    let y = reader.read_f32::<LittleEndian>().unwrap();
-    let z = reader.read_f32::<LittleEndian>().unwrap();
+pub fn read_vec3<T: Read>(reader: &mut T) -> io::Result<Vec3> {
+    let x = reader.read_f32::<LittleEndian>()?;
+    let y = reader.read_f32::<LittleEndian>()?;
+    let z = reader.read_f32::<LittleEndian>()?;
 
-    vec3(x, y, z)
+    Ok(vec3(x, y, z))
 }
