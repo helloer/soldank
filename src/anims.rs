@@ -1,12 +1,10 @@
 use super::*;
-use lazy_static;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
-lazy_static! {
-    static ref ANIMATIONS: Vec<AnimData> = load_animations();
-}
+static ANIMATIONS: LazyLock<Vec<AnimData>> = LazyLock::new(load_animations);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Anim {
@@ -131,7 +129,7 @@ impl AnimState {
 
 impl AnimData {
     pub fn initialize() {
-        lazy_static::initialize(&ANIMATIONS);
+        LazyLock::force(&ANIMATIONS);
     }
 
     pub fn load_from_file(id: Anim, file_name: &str, speed: i32, looped: bool) -> AnimData {
@@ -242,7 +240,8 @@ fn load_animations() -> Vec<AnimData> {
         (Anim::Own, "rucha.poa", 3, false),
     ];
 
-    let mut animations: Vec<AnimData> = data.iter()
+    let mut animations: Vec<AnimData> = data
+        .iter()
         .map(|params| AnimData::load_from_file(params.0, params.1, params.2, params.3))
         .collect();
 

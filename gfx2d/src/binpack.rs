@@ -25,7 +25,9 @@ impl<T> Rect<T> {
     }
 
     pub fn contains(&self, rc: &Rect<T>) -> bool {
-        rc.left() >= self.left() && rc.top() >= self.top() && rc.right() <= self.right()
+        rc.left() >= self.left()
+            && rc.top() >= self.top()
+            && rc.right() <= self.right()
             && rc.bottom() <= self.bottom()
     }
 }
@@ -42,7 +44,7 @@ struct BinPack {
     free: Vec<BPRect>,
 }
 
-const MAX_SCORE: (i32, i32) = (::std::i32::MAX, ::std::i32::MAX);
+const MAX_SCORE: (i32, i32) = (i32::MAX, i32::MAX);
 
 pub fn pack_rects<T>(width: i32, height: i32, rects: &mut [Rect<T>]) -> usize {
     let mut bp = BinPack {
@@ -128,8 +130,10 @@ fn place_rect(bp: &mut BinPack, rect: &BPRect) {
 }
 
 fn split_free_rect(bp: &mut BinPack, free_rect: &BPRect, used_rect: &BPRect) -> bool {
-    if used_rect.left() >= free_rect.right() || used_rect.right() <= free_rect.left()
-        || used_rect.top() >= free_rect.bottom() || used_rect.bottom() <= free_rect.top()
+    if used_rect.left() >= free_rect.right()
+        || used_rect.right() <= free_rect.left()
+        || used_rect.top() >= free_rect.bottom()
+        || used_rect.bottom() <= free_rect.top()
     {
         return false;
     }

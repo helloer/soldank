@@ -2,12 +2,9 @@
 name = "gfx2d"
 version = "0.1.0"
 authors = ["Mariano Cuatrin <mariano.cuatrin@gmail.com>"]
+edition = "2024"
 
 [dependencies]
-gfx = "0.18.1"
-gfx_core = "0.9.1"
-gfx_device_gl = "0.16.1"
-gfx_window_glutin = "0.31.0"
-glutin = "0.21"
-image = "0.21.2"
-cgmath = "0.17"
+miniquad = "0.4.11"
+glam = "0.33"
+image = "0.25"

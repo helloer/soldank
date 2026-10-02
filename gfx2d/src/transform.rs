@@ -68,7 +68,7 @@ impl Transform {
             Transform::Pos(p) => Mat2d::translate(p.x, p.y),
 
             Transform::FromOrigin { pos, scale, rot } => {
-                let (s, c) = (Rad::sin(rot.0), Rad::cos(rot.0));
+                let (s, c) = rot.0.sin_cos();
 
                 Mat2d(
                     (
@@ -90,7 +90,7 @@ impl Transform {
                 scale,
                 rot,
             } => {
-                let (s, c) = (Rad::sin(rot), Rad::cos(rot));
+                let (s, c) = rot.sin_cos();
                 let m = ((c * scale.x, -s * scale.y), (s * scale.x, c * scale.y));
 
                 Mat2d(

@@ -1,5 +1,6 @@
 use super::*;
-use glutin;
+use gfx2d::mq::{KeyCode, MouseButton};
+use std::sync::LazyLock;
 
 const SLIDELIMIT: f32 = 0.2;
 const GRAV: f32 = 0.06;
@@ -17,10 +18,9 @@ const POS_PRONE: u8 = 3;
 const MAX_VELOCITY: f32 = 11.0;
 const SOLDIER_COL_RADIUS: f32 = 3.0;
 
-lazy_static! {
-    static ref SOLDIER_SKELETON: ParticleSystem =
-        ParticleSystem::load_from_file("gostek.po", 4.5, 1.0, 1.06 * GRAV, 0.0, 0.9945);
-}
+static SOLDIER_SKELETON: LazyLock<ParticleSystem> = LazyLock::new(|| {
+    ParticleSystem::load_from_file("gostek.po", 4.5, 1.0, 1.06 * GRAV, 0.0, 0.9945)
+});
 
 #[allow(dead_code)]
 pub struct Soldier {
@@ -60,7 +60,7 @@ pub struct Soldier {
 
 impl Soldier {
     pub fn initialize() {
-        lazy_static::initialize(&SOLDIER_SKELETON);
+        LazyLock::force(&SOLDIER_SKELETON);
     }
 
     pub fn primary_weapon(&self) -> &Weapon {
@@ -83,41 +83,24 @@ impl Soldier {
         // burst_count = 0;
     }
 
-    pub fn update_keys(&mut self, input: &glutin::KeyboardInput) {
-        match input.state {
-            glutin::ElementState::Pressed => match input.virtual_keycode {
-                Some(glutin::VirtualKeyCode::A) => self.control.left = true,
-                Some(glutin::VirtualKeyCode::D) => self.control.right = true,
-                Some(glutin::VirtualKeyCode::W) => self.control.up = true,
-                Some(glutin::VirtualKeyCode::S) => self.control.down = true,
-                Some(glutin::VirtualKeyCode::Q) => self.control.change = true,
-                Some(glutin::VirtualKeyCode::E) => self.control.throw = true,
-                Some(glutin::VirtualKeyCode::F) => self.control.drop = true,
-                Some(glutin::VirtualKeyCode::X) => self.control.prone = true,
-                _ => {}
-            },
-            glutin::ElementState::Released => match input.virtual_keycode {
-                Some(glutin::VirtualKeyCode::A) => self.control.left = false,
-                Some(glutin::VirtualKeyCode::D) => self.control.right = false,
-                Some(glutin::VirtualKeyCode::W) => self.control.up = false,
-                Some(glutin::VirtualKeyCode::S) => self.control.down = false,
-                Some(glutin::VirtualKeyCode::Q) => self.control.change = false,
-                Some(glutin::VirtualKeyCode::E) => self.control.throw = false,
-                Some(glutin::VirtualKeyCode::F) => self.control.drop = false,
-                Some(glutin::VirtualKeyCode::X) => self.control.prone = false,
-                _ => {}
-            },
+    pub fn update_keys(&mut self, keycode: KeyCode, pressed: bool) {
+        match keycode {
+            KeyCode::A => self.control.left = pressed,
+            KeyCode::D => self.control.right = pressed,
+            KeyCode::W => self.control.up = pressed,
+            KeyCode::S => self.control.down = pressed,
+            KeyCode::Q => self.control.change = pressed,
+            KeyCode::E => self.control.throw = pressed,
+            KeyCode::F => self.control.drop = pressed,
+            KeyCode::X => self.control.prone = pressed,
+            _ => {}
         }
     }
 
-    pub fn update_mouse_button(&mut self, input: &(glutin::ElementState, glutin::MouseButton)) {
-        let pressed = match input.0 {
-            glutin::ElementState::Pressed => true,
-            glutin::ElementState::Released => false,
-        };
-        match input.1 {
-            glutin::MouseButton::Left => self.control.fire = pressed,
-            glutin::MouseButton::Right => self.control.jets = pressed,
+    pub fn update_mouse_button(&mut self, button: MouseButton, pressed: bool) {
+        match button {
+            MouseButton::Left => self.control.fire = pressed,
+            MouseButton::Right => self.control.jets = pressed,
             _ => (),
         }
     }
@@ -193,7 +176,8 @@ impl Soldier {
     }
 
     pub fn handle_special_polytypes(&mut self, map: &MapFile, polytype: PolyType, _pos: Vec2) {
-        if polytype == PolyType::Deadly || polytype == PolyType::BloodyDeadly
+        if polytype == PolyType::Deadly
+            || polytype == PolyType::BloodyDeadly
             || polytype == PolyType::Explosive
         {
             self.particle.pos = vec2(map.spawnpoints[0].x as f32, map.spawnpoints[0].y as f32);
@@ -258,7 +242,7 @@ impl Soldier {
 
         for i in 1..21 {
             if self.skeleton.active(i) && !self.dead_meat {
-                let mut pos = Vec2::zero();
+                let mut pos = Vec2::ZERO;
                 *self.skeleton.old_pos_mut(i) = self.skeleton.pos(i);
 
                 if !self.half_dead && ((i >= 1 && i <= 6) || (i == 17) || (i == 18)) {
@@ -516,7 +500,8 @@ impl Soldier {
                                     self.particle.force.y -= GRAV;
                                 }
 
-                                if (step.y > SLIDELIMIT) && (polytype != PolyType::Ice)
+                                if (step.y > SLIDELIMIT)
+                                    && (polytype != PolyType::Ice)
                                     && (polytype != PolyType::Bouncy)
                                 {
                                     if (self.legs_animation.id == Anim::Stand)
@@ -768,7 +753,8 @@ impl Soldier {
         let weapon = self.primary_weapon();
 
         let dir = {
-            if weapon.bullet_style == BulletStyle::Blade || self.body_animation.id == Anim::Mercy
+            if weapon.bullet_style == BulletStyle::Blade
+                || self.body_animation.id == Anim::Mercy
                 || self.body_animation.id == Anim::Mercy2
             {
                 vec2normalize(self.skeleton.pos(15) - self.skeleton.pos(16))

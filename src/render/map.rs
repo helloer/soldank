@@ -65,22 +65,22 @@ fn add_scenery(batch: &mut DrawBatch, (prop, sprite): (&MapProp, &Sprite)) {
 }
 
 impl MapGraphics {
-    pub fn background(&mut self) -> DrawSlice {
+    pub fn background(&mut self) -> DrawSlice<'_> {
         self.batch.slice(self.background.clone())
     }
-    pub fn polys_back(&mut self) -> DrawSlice {
+    pub fn polys_back(&mut self) -> DrawSlice<'_> {
         self.batch.slice(self.polys_back.clone())
     }
-    pub fn polys_front(&mut self) -> DrawSlice {
+    pub fn polys_front(&mut self) -> DrawSlice<'_> {
         self.batch.slice(self.polys_front.clone())
     }
-    pub fn scenery_back(&mut self) -> DrawSlice {
+    pub fn scenery_back(&mut self) -> DrawSlice<'_> {
         self.batch.slice(self.scenery_back.clone())
     }
-    pub fn scenery_mid(&mut self) -> DrawSlice {
+    pub fn scenery_mid(&mut self) -> DrawSlice<'_> {
         self.batch.slice(self.scenery_mid.clone())
     }
-    pub fn scenery_front(&mut self) -> DrawSlice {
+    pub fn scenery_front(&mut self) -> DrawSlice<'_> {
         self.batch.slice(self.scenery_front.clone())
     }
 
@@ -139,7 +139,8 @@ impl MapGraphics {
         };
 
         let sprites = {
-            let scenery_info: Vec<SpriteInfo> = map.scenery
+            let scenery_info: Vec<SpriteInfo> = map
+                .scenery
                 .iter()
                 .enumerate()
                 .filter(|&(i, _)| scenery_used[i])

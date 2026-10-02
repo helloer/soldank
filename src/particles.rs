@@ -40,10 +40,10 @@ impl Default for Particle {
     fn default() -> Particle {
         Particle {
             active: false,
-            pos: Vec2::zero(),
-            old_pos: Vec2::zero(),
-            velocity: Vec2::zero(),
-            force: Vec2::zero(),
+            pos: Vec2::ZERO,
+            old_pos: Vec2::ZERO,
+            velocity: Vec2::ZERO,
+            force: Vec2::ZERO,
             one_over_mass: 0.0,
             timestep: 0.0,
             gravity: 0.0,
@@ -60,7 +60,7 @@ impl Particle {
         self.velocity += self.force * self.one_over_mass * self.timestep.powi(2);
         self.pos += self.velocity;
         self.velocity *= self.e_damping;
-        self.force = Vec2::zero();
+        self.force = Vec2::ZERO;
     }
 
     pub fn verlet(&mut self) {
@@ -70,7 +70,7 @@ impl Particle {
         self.old_pos = self.pos;
         self.force.y += self.gravity;
         self.pos = a - b + self.force * self.one_over_mass * self.timestep.powi(2);
-        self.force = Vec2::zero();
+        self.force = Vec2::ZERO;
     }
 }
 
@@ -163,7 +163,7 @@ impl ParticleSystem {
         let (a, b) = (constraint.particle_num.0 - 1, constraint.particle_num.1 - 1);
 
         let delta = particles[b].pos - particles[a].pos;
-        let length = delta.magnitude();
+        let length = delta.length();
 
         if length > 0.0 {
             let diff = (length - constraint.rest_length) / length;
@@ -223,8 +223,8 @@ impl ParticleSystem {
                 active: true,
                 pos: p,
                 old_pos: p,
-                velocity: Vec2::zero(),
-                force: Vec2::zero(),
+                velocity: Vec2::ZERO,
+                force: Vec2::ZERO,
                 one_over_mass: 1.0,
                 timestep,
                 gravity,
@@ -250,7 +250,7 @@ impl ParticleSystem {
             };
 
             let delta = particles[pa_num - 1].pos - particles[pb_num - 1].pos;
-            constraints.push(Constraint::new(pa_num, pb_num, delta.magnitude()));
+            constraints.push(Constraint::new(pa_num, pb_num, delta.length()));
         }
 
         ParticleSystem {

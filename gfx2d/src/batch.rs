@@ -1,11 +1,10 @@
 use super::*;
-use gfx::Factory;
-use gfx::traits::FactoryExt;
+use miniquad::{BufferId, BufferSource, BufferType, BufferUsage, RenderingBackend};
 use std::ops::Range;
 
 fn batch_command(texture: Option<&Texture>, vertex_range: Range<usize>) -> BatchCommand {
     BatchCommand {
-        texture: texture.cloned(),
+        texture: texture.copied(),
         vertex_range,
     }
 }
@@ -24,7 +23,7 @@ enum BatchUsage {
 
 #[derive(Debug, Clone)]
 pub struct DrawBatch {
-    vbuf: Option<VertexBuffer>,
+    vbuf: Option<BufferId>,
     buf: Vec<Vertex>,
     cmds: Vec<BatchCommand>,
     split_start: usize,
@@ -38,8 +37,8 @@ pub struct DrawSlice<'a> {
     pub cmd_range: Range<usize>,
 }
 
-impl<'a> DrawSlice<'a> {
-    pub fn buffer(&self) -> VertexBuffer {
+impl DrawSlice<'_> {
+    pub fn buffer(&self) -> BufferId {
         self.batch.buffer()
     }
 
@@ -48,7 +47,7 @@ impl<'a> DrawSlice<'a> {
     }
 }
 
-impl ::std::default::Default for DrawBatch {
+impl Default for DrawBatch {
     fn default() -> Self {
         Self::new()
     }
@@ -89,11 +88,7 @@ impl DrawBatch {
         self.updated = false;
         self.buf.extend_from_slice(vertices);
 
-        if m == 0 || m == self.split_start
-            || (m > 0
-                && (texture.is_none() != self.last_texture().is_none()
-                    || texture.is_some() && texture.unwrap().is(self.last_texture().unwrap())))
-        {
+        if m == 0 || m == self.split_start || texture != self.last_texture() {
             self.cmds.push(batch_command(texture, i..i + n));
         } else {
             self.cmds.last_mut().unwrap().vertex_range.end += n;
@@ -101,10 +96,7 @@ impl DrawBatch {
     }
 
     fn last_texture(&self) -> Option<&Texture> {
-        match self.cmds.last() {
-            None => None,
-            Some(cmd) => cmd.texture.as_ref(),
-        }
+        self.cmds.last().and_then(|cmd| cmd.texture.as_ref())
     }
 
     pub fn add_quad(&mut self, texture: Option<&Texture>, vertices: &[Vertex; 4]) {
@@ -143,7 +135,7 @@ impl DrawBatch {
         range
     }
 
-    pub fn all(&mut self) -> DrawSlice {
+    pub fn all(&mut self) -> DrawSlice<'_> {
         let len = self.cmds.len();
         DrawSlice {
             batch: self,
@@ -151,38 +143,60 @@ impl DrawBatch {
         }
     }
 
-    pub fn slice(&mut self, cmd_range: Range<usize>) -> DrawSlice {
+    pub fn slice(&mut self, cmd_range: Range<usize>) -> DrawSlice<'_> {
         DrawSlice {
             batch: self,
             cmd_range,
         }
     }
 
-    pub fn update(&mut self, context: &mut Gfx2dContext) {
-        if !self.updated {
-            match self.usage {
-                BatchUsage::Dynamic => {
-                    if self.vbuf.is_none() || self.vbuf.as_ref().unwrap().len() < self.buf.len() {
-                        let n = self.buf.len().next_power_of_two();
-                        let (role, usage, bind) = (VertexRole, Dynamic, Bind::empty());
-                        let vbuf = context.fct.create_buffer(n, role, usage, bind);
-                        self.vbuf = Some(vbuf.unwrap());
-                    }
-
-                    let vbuf = self.vbuf.as_ref().unwrap();
-                    context.enc.update_buffer(vbuf, &self.buf, 0).unwrap();
-                    self.updated = true;
-                }
-                BatchUsage::Static => {
-                    self.vbuf = Some(context.fct.create_vertex_buffer(&self.buf));
-                    self.updated = true;
-                }
-            };
+    pub fn update(&mut self, ctx: &mut dyn RenderingBackend) {
+        if self.updated {
+            return;
         }
+
+        let size = self.buf.len() * std::mem::size_of::<Vertex>();
+
+        match self.usage {
+            BatchUsage::Dynamic => {
+                let too_small = self.vbuf.is_none_or(|vbuf| ctx.buffer_size(vbuf) < size);
+
+                if too_small {
+                    let n = self.buf.len().next_power_of_two();
+                    let source = BufferSource::empty::<Vertex>(n);
+                    let vbuf =
+                        ctx.new_buffer(BufferType::VertexBuffer, BufferUsage::Stream, source);
+
+                    if let Some(old) = self.vbuf.replace(vbuf) {
+                        ctx.delete_buffer(old);
+                    }
+                }
+
+                ctx.buffer_update(self.vbuf.unwrap(), BufferSource::slice(&self.buf));
+            }
+            BatchUsage::Static => {
+                let source = BufferSource::slice(&self.buf);
+                let vbuf = ctx.new_buffer(BufferType::VertexBuffer, BufferUsage::Immutable, source);
+
+                if let Some(old) = self.vbuf.replace(vbuf) {
+                    ctx.delete_buffer(old);
+                }
+            }
+        };
+
+        self.updated = true;
     }
 
-    pub fn buffer(&self) -> VertexBuffer {
-        self.vbuf.clone().unwrap()
+    pub fn buffer(&self) -> BufferId {
+        self.vbuf.unwrap()
+    }
+
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
     }
 
     pub fn commands(&self, range: Range<usize>) -> &[BatchCommand] {

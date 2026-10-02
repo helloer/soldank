@@ -2,17 +2,13 @@
 name = "soldank"
 version = "0.1.0"
 authors = ["helloer <im.helloer@gmail.com>"]
+edition = "2024"
+
+[workspace]
+members = ["gfx2d"]
 
 [dependencies]
-byteorder = "1.3.2"
 gfx2d = { path = "gfx2d" }
-gfx = "0.18.1"
-gfx_window_glutin = "0.31.0"
-glutin = "0.21.0"
-image = "0.21.2"
-time = "0.1.42"
-rust-ini = "0.13.0"
-bit-array = "0.4.4"
-typenum = "1.10.0"
-clap = "2.33.0"
-lazy_static = "1.3.0"
+byteorder = "1.5"
+rust-ini = "0.21"
+clap = { version = "4.6", features = ["derive"] }

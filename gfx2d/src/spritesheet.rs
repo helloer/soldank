@@ -1,6 +1,6 @@
 use super::*;
-use binpack::pack_rects;
-use image::{self, GenericImage, RgbaImage as Image};
+use crate::binpack::{self, pack_rects};
+use image::{GenericImage, RgbaImage as Image};
 use std::path::PathBuf;
 
 type Rect = binpack::Rect<(usize, usize)>;
@@ -50,7 +50,7 @@ impl Sprite {
             height,
             texcoords_x: tx,
             texcoords_y: ty,
-            texture: texture.cloned(),
+            texture: texture.copied(),
         }
     }
 
@@ -62,7 +62,7 @@ impl Sprite {
             height: f32::from(h) / pixel_ratio.y,
             texcoords_x: (0.0, 1.0),
             texcoords_y: (0.0, 1.0),
-            texture: Some(texture.clone()),
+            texture: Some(*texture),
         }
     }
 }
@@ -115,7 +115,7 @@ impl Spritesheet {
             let h = i32::min(max_size, img.height() as i32);
 
             if w != img.width() as i32 || h != img.height() as i32 {
-                let filter = image::FilterType::Lanczos3;
+                let filter = image::imageops::FilterType::Lanczos3;
                 img = image::imageops::resize(&img, w as u32, h as u32, filter);
             }
 
@@ -141,7 +141,9 @@ impl Spritesheet {
         for rc in &rects {
             let image_index = rc.data.0;
             let sheet_index = rc.data.1;
-            sheets[sheet_index].copy_from(&images[image_index], rc.x as u32, rc.y as u32);
+            sheets[sheet_index]
+                .copy_from(&images[image_index], rc.x as u32, rc.y as u32)
+                .expect("sprite does not fit in sheet");
         }
 
         let textures: Vec<Texture> = sheets
@@ -165,7 +167,7 @@ impl Spritesheet {
             let (x0, x1) = (rc.left() as f32, (rc.right() - padding) as f32);
             let (y0, y1) = (rc.top() as f32, (rc.bottom() - padding) as f32);
 
-            sprite.texture = Some(texture.clone());
+            sprite.texture = Some(*texture);
             sprite.texcoords_x = (x0 / f32::from(w), x1 / f32::from(w));
             sprite.texcoords_y = (y0 / f32::from(h), y1 / f32::from(h));
         }
@@ -183,14 +185,15 @@ impl Spritesheet {
             let area = {
                 let mut area: u64 = 0;
                 let rects = rects.iter();
-                rects.for_each(|rc| area += (rc.w * rc.h).abs() as u64);
+                rects.for_each(|rc| area += (rc.w * rc.h).unsigned_abs() as u64);
                 area
             };
 
             let mut w = u32::next_power_of_two(f64::sqrt(area as f64).ceil() as u32) as i32;
             let mut h = w;
 
-            while w <= max_size && h <= max_size
+            while w <= max_size
+                && h <= max_size
                 && pack_rects(w + pad, h + pad, rects) < rects.len()
             {
                 if w <= h {
@@ -212,7 +215,7 @@ impl Spritesheet {
                 let mut a = 0;
 
                 while a < area && i < rects.len() - 1 {
-                    a += (rects[i].w * rects[i].h).abs() as u64;
+                    a += (rects[i].w * rects[i].h).unsigned_abs() as u64;
                     i += 1;
                 }
 

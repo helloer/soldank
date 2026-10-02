@@ -1,11 +1,9 @@
 use super::*;
-use bit_array::BitArray;
 use gfx::{SoldierPart, SpriteData};
 use ini::Ini;
 use std::str::FromStr;
-use typenum::U256;
 
-type BitSet = BitArray<u64, U256>;
+type BitSet = [bool; 256];
 
 #[derive(Debug, Copy, Clone)]
 pub enum SoldierSprite {
@@ -64,7 +62,7 @@ impl SoldierGraphics {
     pub fn new() -> SoldierGraphics {
         SoldierGraphics {
             parts: SoldierPart::data().to_vec(),
-            base_visibility: BitSet::from_fn(|i| {
+            base_visibility: std::array::from_fn(|i| {
                 SoldierPart::data().get(i).map_or(false, |p| p.visible)
             }),
         }
@@ -142,7 +140,7 @@ pub fn render_soldier(
             }
 
             if part.flexibility > 0.0 {
-                scale.x = f32::min(1.5, (p1 - p0).magnitude() / part.flexibility);
+                scale.x = f32::min(1.5, (p1 - p0).length() / part.flexibility);
             }
 
             let color = {
@@ -224,31 +222,31 @@ fn colors_and_alpha(soldier: &Soldier) -> ([Color; 7], [u8; 3]) {
 }
 
 fn parts_visibility(base_visibility: &BitSet, soldier: &Soldier, blood: bool) -> BitSet {
-    let mut visible = base_visibility.clone();
+    let mut visible = *base_visibility;
 
     if blood {
-        visible.set(SoldierPart::LeftThighDmg.id(), true);
-        visible.set(SoldierPart::LeftLowerlegDmg.id(), true);
-        visible.set(SoldierPart::LeftForearmDmg.id(), true);
-        visible.set(SoldierPart::LeftArmDmg.id(), true);
-        visible.set(SoldierPart::ChestDmg.id(), true);
-        visible.set(SoldierPart::HipDmg.id(), true);
-        visible.set(SoldierPart::HeadDmg.id(), true);
-        visible.set(SoldierPart::RightThighDmg.id(), true);
-        visible.set(SoldierPart::RightLowerlegDmg.id(), true);
-        visible.set(SoldierPart::RightForearmDmg.id(), true);
-        visible.set(SoldierPart::RightArmDmg.id(), true);
+        visible[SoldierPart::LeftThighDmg.id()] = true;
+        visible[SoldierPart::LeftLowerlegDmg.id()] = true;
+        visible[SoldierPart::LeftForearmDmg.id()] = true;
+        visible[SoldierPart::LeftArmDmg.id()] = true;
+        visible[SoldierPart::ChestDmg.id()] = true;
+        visible[SoldierPart::HipDmg.id()] = true;
+        visible[SoldierPart::HeadDmg.id()] = true;
+        visible[SoldierPart::RightThighDmg.id()] = true;
+        visible[SoldierPart::RightLowerlegDmg.id()] = true;
+        visible[SoldierPart::RightForearmDmg.id()] = true;
+        visible[SoldierPart::RightArmDmg.id()] = true;
     }
 
     if soldier.control.jets && soldier.jets_count > 0 {
-        visible.set(SoldierPart::LeftFoot.id(), false);
-        visible.set(SoldierPart::RightFoot.id(), false);
-        visible.set(SoldierPart::LeftJetfoot.id(), true);
-        visible.set(SoldierPart::RightJetfoot.id(), true);
+        visible[SoldierPart::LeftFoot.id()] = false;
+        visible[SoldierPart::RightFoot.id()] = false;
+        visible[SoldierPart::LeftJetfoot.id()] = true;
+        visible[SoldierPart::RightJetfoot.id()] = true;
     }
 
     if soldier.vest > 0.0 {
-        visible.set(SoldierPart::Vest.id(), true);
+        visible[SoldierPart::Vest.id()] = true;
     }
 
     let index = if soldier.tertiary_weapon().kind == WeaponKind::FragGrenade {
@@ -266,40 +264,40 @@ fn parts_visibility(base_visibility: &BitSet, soldier: &Soldier, blood: bool) ->
     };
 
     for i in 0..n {
-        visible.set(index + i as usize, true);
+        visible[index + i as usize] = true;
     }
 
     let chain = 0; // TODO: Player.Chain (this seems broken, check skeleton)
 
     match chain {
         1 => {
-            visible.set(SoldierPart::SilverLchain.id(), true);
-            visible.set(SoldierPart::SilverRchain.id(), true);
-            visible.set(SoldierPart::SilverPendant.id(), true);
+            visible[SoldierPart::SilverLchain.id()] = true;
+            visible[SoldierPart::SilverRchain.id()] = true;
+            visible[SoldierPart::SilverPendant.id()] = true;
         }
         2 => {
-            visible.set(SoldierPart::GoldenLchain.id(), true);
-            visible.set(SoldierPart::GoldenRchain.id(), true);
-            visible.set(SoldierPart::GoldenPendant.id(), true);
+            visible[SoldierPart::GoldenLchain.id()] = true;
+            visible[SoldierPart::GoldenRchain.id()] = true;
+            visible[SoldierPart::GoldenPendant.id()] = true;
         }
         _ => {}
     }
 
     if soldier.has_cigar == 5 || soldier.has_cigar == 10 {
-        visible.set(SoldierPart::Cigar.id(), true);
+        visible[SoldierPart::Cigar.id()] = true;
     }
 
     if soldier.dead_meat {
-        visible.set(SoldierPart::Head.id(), false);
-        visible.set(SoldierPart::HeadDmg.id(), false);
-        visible.set(SoldierPart::HeadDead.id(), true);
-        visible.set(SoldierPart::HeadDeadDmg.id(), true);
+        visible[SoldierPart::Head.id()] = false;
+        visible[SoldierPart::HeadDmg.id()] = false;
+        visible[SoldierPart::HeadDead.id()] = true;
+        visible[SoldierPart::HeadDeadDmg.id()] = true;
     }
 
     if soldier.primary_weapon().kind == WeaponKind::Bow
         || soldier.primary_weapon().kind == WeaponKind::FlameBow
     {
-        visible.set(SoldierPart::RamboBadge.id(), true);
+        visible[SoldierPart::RamboBadge.id()] = true;
     } else {
         let grabbed = match soldier.body_animation.id {
             Anim::Wipe | Anim::TakeOff => soldier.body_animation.frame > 4,
@@ -310,10 +308,10 @@ fn parts_visibility(base_visibility: &BitSet, soldier: &Soldier, blood: bool) ->
             let head_cap = gfx::Soldier::Helm; // TODO: Player.HeadCap
 
             match head_cap {
-                gfx::Soldier::Helm if grabbed => visible.set(SoldierPart::GrabbedHelmet.id(), true),
-                gfx::Soldier::Kap if grabbed => visible.set(SoldierPart::GrabbedHat.id(), true),
-                gfx::Soldier::Helm if !grabbed => visible.set(SoldierPart::Helmet.id(), true),
-                gfx::Soldier::Kap if !grabbed => visible.set(SoldierPart::Hat.id(), true),
+                gfx::Soldier::Helm if grabbed => visible[SoldierPart::GrabbedHelmet.id()] = true,
+                gfx::Soldier::Kap if grabbed => visible[SoldierPart::GrabbedHat.id()] = true,
+                gfx::Soldier::Helm if !grabbed => visible[SoldierPart::Helmet.id()] = true,
+                gfx::Soldier::Kap if !grabbed => visible[SoldierPart::Hat.id()] = true,
                 _ => {}
             }
         }
@@ -322,12 +320,14 @@ fn parts_visibility(base_visibility: &BitSet, soldier: &Soldier, blood: bool) ->
 
         if grabbed || soldier.wear_helmet != 1 || hair_style == 3 {
             match hair_style {
-                1 => for i in 0..6 {
-                    visible.set(SoldierPart::HairDreadlocks.id() + i, true);
-                },
-                2 => visible.set(SoldierPart::HairPunk.id(), true),
-                3 => visible.set(SoldierPart::MrT.id(), true),
-                4 => visible.set(SoldierPart::HairNormal.id(), true),
+                1 => {
+                    for i in 0..6 {
+                        visible[SoldierPart::HairDreadlocks.id() + i] = true;
+                    }
+                }
+                2 => visible[SoldierPart::HairPunk.id()] = true,
+                3 => visible[SoldierPart::MrT.id()] = true,
+                4 => visible[SoldierPart::HairNormal.id()] = true,
                 _ => {}
             }
         }
@@ -338,7 +338,7 @@ fn parts_visibility(base_visibility: &BitSet, soldier: &Soldier, blood: bool) ->
     let index = soldier.secondary_weapon().kind.index();
 
     if index >= WeaponKind::DesertEagles.index() && index <= WeaponKind::Flamer.index() {
-        visible.set(SoldierPart::SecondaryDeagles.id() + index, true);
+        visible[SoldierPart::SecondaryDeagles.id() + index] = true;
     }
 
     // primary weapon
@@ -348,32 +348,32 @@ fn parts_visibility(base_visibility: &BitSet, soldier: &Soldier, blood: bool) ->
     let reload_count = weapon.reload_time_count;
 
     if weapon.kind == WeaponKind::Minigun {
-        visible.set(SoldierPart::PrimaryMinigun.id(), true);
+        visible[SoldierPart::PrimaryMinigun.id()] = true;
 
         if ammo > 0 || (ammo == 0 && weapon.reload_time_count < 65) {
-            visible.set(SoldierPart::PrimaryMinigunClip.id(), true);
+            visible[SoldierPart::PrimaryMinigunClip.id()] = true;
         }
 
         if soldier.fired > 0 {
-            visible.set(SoldierPart::PrimaryMinigunFire.id(), true);
+            visible[SoldierPart::PrimaryMinigunFire.id()] = true;
         }
     } else if weapon.kind == WeaponKind::Bow || weapon.kind == WeaponKind::FlameBow {
         if ammo == 0 {
-            visible.set(SoldierPart::PrimaryBowArrowReload.id(), true);
+            visible[SoldierPart::PrimaryBowArrowReload.id()] = true;
         } else {
-            visible.set(SoldierPart::PrimaryBowArrow.id(), true);
+            visible[SoldierPart::PrimaryBowArrow.id()] = true;
         }
 
         if soldier.body_animation.id == Anim::ReloadBow {
-            visible.set(SoldierPart::PrimaryBowReload.id(), true);
-            visible.set(SoldierPart::PrimaryBowStringReload.id(), true);
+            visible[SoldierPart::PrimaryBowReload.id()] = true;
+            visible[SoldierPart::PrimaryBowStringReload.id()] = true;
         } else {
-            visible.set(SoldierPart::PrimaryBow.id(), true);
-            visible.set(SoldierPart::PrimaryBowString.id(), true);
+            visible[SoldierPart::PrimaryBow.id()] = true;
+            visible[SoldierPart::PrimaryBowString.id()] = true;
         }
 
         if soldier.fired > 0 {
-            visible.set(SoldierPart::PrimaryBowFire.id(), true);
+            visible[SoldierPart::PrimaryBowFire.id()] = true;
         }
     } else if !soldier.dead_meat {
         let first = SoldierPart::PrimaryDeagles;
@@ -386,7 +386,7 @@ fn parts_visibility(base_visibility: &BitSet, soldier: &Soldier, blood: bool) ->
                 index *= 3;
             }
 
-            visible.set(first.id() + index, true);
+            visible[first.id() + index] = true;
 
             if weapon.clip_sprite.is_some()
                 && (ammo > 0
@@ -394,11 +394,11 @@ fn parts_visibility(base_visibility: &BitSet, soldier: &Soldier, blood: bool) ->
                         && (reload_count < weapon.clip_in_time
                             || reload_count > weapon.clip_out_time))
             {
-                visible.set(first.id() + index + 1, true);
+                visible[first.id() + index + 1] = true;
             }
 
             if soldier.fired > 0 {
-                visible.set(first.id() + 2, true);
+                visible[first.id() + 2] = true;
             }
         }
     }
@@ -421,15 +421,16 @@ pub fn render_skeleton(soldier: &Soldier, batch: &mut DrawBatch, px: f32, frame_
             pivot: vec2(0.0, 0.0),
             scale: vec2(distance(a, b), 1.0),
             rot: vec2angle(b - a),
-        }.matrix();
+        }
+        .matrix();
 
         batch.add_quad(
             None,
             &[
-                vertex(m * vec2(0.0, -0.5 * px), Vec2::zero(), rgb(255, 255, 0)),
-                vertex(m * vec2(1.0, -0.5 * px), Vec2::zero(), rgb(255, 255, 0)),
-                vertex(m * vec2(1.0, 0.5 * px), Vec2::zero(), rgb(255, 255, 0)),
-                vertex(m * vec2(0.0, 0.5 * px), Vec2::zero(), rgb(255, 255, 0)),
+                vertex(m * vec2(0.0, -0.5 * px), Vec2::ZERO, rgb(255, 255, 0)),
+                vertex(m * vec2(1.0, -0.5 * px), Vec2::ZERO, rgb(255, 255, 0)),
+                vertex(m * vec2(1.0, 0.5 * px), Vec2::ZERO, rgb(255, 255, 0)),
+                vertex(m * vec2(0.0, 0.5 * px), Vec2::ZERO, rgb(255, 255, 0)),
             ],
         );
     }
@@ -441,10 +442,10 @@ pub fn render_skeleton(soldier: &Soldier, batch: &mut DrawBatch, px: f32, frame_
         batch.add_quad(
             None,
             &[
-                vertex(m * vec2(-1.0 * px, -1.0 * px), Vec2::zero(), rgb(0, 0, 255)),
-                vertex(m * vec2(1.0 * px, -1.0 * px), Vec2::zero(), rgb(0, 0, 255)),
-                vertex(m * vec2(1.0 * px, 1.0 * px), Vec2::zero(), rgb(0, 0, 255)),
-                vertex(m * vec2(-1.0 * px, 1.0 * px), Vec2::zero(), rgb(0, 0, 255)),
+                vertex(m * vec2(-1.0 * px, -1.0 * px), Vec2::ZERO, rgb(0, 0, 255)),
+                vertex(m * vec2(1.0 * px, -1.0 * px), Vec2::ZERO, rgb(0, 0, 255)),
+                vertex(m * vec2(1.0 * px, 1.0 * px), Vec2::ZERO, rgb(0, 0, 255)),
+                vertex(m * vec2(-1.0 * px, 1.0 * px), Vec2::ZERO, rgb(0, 0, 255)),
             ],
         );
     }

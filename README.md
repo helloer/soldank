@@ -10,10 +10,10 @@
 * Fully authentic look and feel
 * ~~bugs~~ feature-complete port of soldat
 
-# How to build: 
-1. Install cargo and rust (nightly) - https://doc.rust-lang.org/cargo/getting-started/installation.html
-2. copy ```anims objects maps textures scenery-gfx gostek-gfx objects-gfx sparks-gfx weapons-gfx interface-gfx mod.ini``` from soldat to `soldank/assets`
-3. ```cargo run --release``` to run the game
+# How to build:
+1. Install Rust (stable, 1.85+) - https://rustup.rs
+2. Copy ```anims objects maps textures scenery-gfx gostek-gfx objects-gfx sparks-gfx weapons-gfx interface-gfx mod.ini``` from the `shared` directory of [opensoldat/base](https://github.com/opensoldat/base) (or from a Soldat install) to `soldank/assets`
+3. ```cargo run --release``` to run the game (```-- --map <name>``` to pick a map, default `ctf_Ash`)
 
 # ROADMAP:
 

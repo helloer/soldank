@@ -1,14 +1,3 @@
-#[macro_use]
-extern crate lazy_static;
-extern crate bit_array;
-extern crate byteorder;
-extern crate clap;
-extern crate gfx2d;
-extern crate glutin;
-extern crate ini;
-extern crate time;
-extern crate typenum;
-
 macro_rules! iif(
     ($cond:expr, $then:expr, $else:expr) => (if $cond { $then } else { $else })
 );
@@ -35,145 +24,134 @@ use soldier::*;
 use state::*;
 use weapons::*;
 
-use clap::{App, Arg};
-use glutin::*;
+use clap::Parser;
+use gfx2d::mq::{self, EventHandler, KeyCode, KeyMods, MouseButton, conf, window};
+use std::time::Instant;
 
 const GRAV: f32 = 0.06;
 
+#[derive(Parser)]
+#[command(name = "Soldank", version = "0.0.1")]
+#[command(about = "open source clone of Soldat engine written in rust")]
+struct Cli {
+    /// name of map to load
+    #[arg(short, long, default_value = "ctf_Ash")]
+    map: String,
+}
+
 fn main() {
-    let cmd = App::new("Soldank")
-        .about("open source clone of Soldat engine written in rust")
-        .version("0.0.1")
-        .arg(
-            Arg::with_name("map")
-                .help("name of map to load")
-                .short("m")
-                .long("map")
-                .takes_value(true),
-        )
-        .get_matches();
+    let cli = Cli::parse();
 
     AnimData::initialize();
     Soldier::initialize();
 
-    let mut map_name = cmd.value_of("map").unwrap_or("ctf_Ash").to_owned();
-    map_name.push_str(".pms");
-
-    let map = MapFile::load_map_file(map_name.as_str());
+    let map = MapFile::load_map_file(&format!("{}.pms", cli.map));
 
     const W: u32 = 1280;
     const H: u32 = 720;
 
-    let mut state = MainState {
+    let state = MainState {
         map,
         game_width: W as f32 * (480.0 / H as f32),
         game_height: 480.0,
-        camera: Vec2::zero(),
-        camera_prev: Vec2::zero(),
-        mouse: Vec2::zero(),
-        mouse_prev: Vec2::zero(),
+        camera: Vec2::ZERO,
+        camera_prev: Vec2::ZERO,
+        mouse: Vec2::ZERO,
+        mouse_prev: Vec2::ZERO,
         gravity: GRAV,
         zoom: 0.0,
         bullets: vec![],
     };
 
-    let mut soldier = Soldier::new(&state.map.spawnpoints[0]);
-    state.camera = soldier.particle.pos;
+    let conf = conf::Conf {
+        window_title: "Soldank".to_owned(),
+        window_width: W as i32,
+        window_height: H as i32,
+        window_resizable: false,
+        platform: conf::Platform {
+            linux_backend: conf::LinuxBackend::X11WithWaylandFallback,
+            swap_interval: Some(1),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
-    let mut emitter: Vec<EmitterItem> = Vec::new();
+    mq::start(conf, move || Box::new(Game::new(state)));
+}
 
-    // setup window, renderer & main loop
+struct Game {
+    context: gfx2d::Gfx2dContext,
+    graphics: GameGraphics,
+    state: MainState,
+    soldier: Soldier,
+    emitter: Vec<EmitterItem>,
+    weapons: Vec<Weapon>,
+    time_start: Instant,
+    timecur: f64,
+    timeprv: f64,
+    timeacc: f64,
+    zoomin_pressed: bool,
+    zoomout_pressed: bool,
+}
 
-    let mut context = gfx2d::Gfx2dContext::initialize("Soldank", W, H);
-    context
-        .wnd
-        .window()
-        .hide_cursor(true);
-    context
-        .wnd
-        .window()
-        .grab_cursor(true)
-        .unwrap();
-    context.clear(gfx2d::rgb(0, 0, 0));
-    context.present();
+impl Game {
+    fn new(mut state: MainState) -> Game {
+        let soldier = Soldier::new(&state.map.spawnpoints[0]);
+        state.camera = soldier.particle.pos;
 
-    let mut graphics = GameGraphics::new(&mut context);
-    graphics.load_sprites(&mut context);
-    graphics.load_map(&mut context, &state.map);
+        let mut context = gfx2d::Gfx2dContext::new();
+        window::show_mouse(false);
+        window::set_cursor_grab(true);
 
-    let time_start = time::precise_time_s();
-    let current_time = || time::precise_time_s() - time_start;
+        let mut graphics = GameGraphics::new();
+        graphics.load_sprites(&mut context);
+        graphics.load_map(&mut context, &state.map);
 
-    let mut timecur: f64 = current_time();
-    let mut timeprv: f64 = timecur;
-    let mut timeacc: f64 = 0.0;
-    let mut running = true;
+        let weapons: Vec<Weapon> = WeaponKind::values()
+            .iter()
+            .map(|k| Weapon::new(*k, false))
+            .collect();
 
-    let mut zoomin_pressed = false;
-    let mut zoomout_pressed = false;
+        Game {
+            context,
+            graphics,
+            state,
+            soldier,
+            emitter: Vec::new(),
+            weapons,
+            time_start: Instant::now(),
+            timecur: 0.0,
+            timeprv: 0.0,
+            timeacc: 0.0,
+            zoomin_pressed: false,
+            zoomout_pressed: false,
+        }
+    }
 
-    let weapons: Vec<Weapon> = WeaponKind::values()
-        .iter()
-        .map(|k| Weapon::new(*k, false))
-        .collect();
+    fn current_time(&self) -> f64 {
+        self.time_start.elapsed().as_secs_f64()
+    }
+}
 
-    while running {
-        context.evt.poll_events(|e| {
-            if let Event::WindowEvent { event, .. } = e {
-                match event {
-                    WindowEvent::CloseRequested => running = false,
-                    WindowEvent::KeyboardInput { input, .. } => match input.virtual_keycode {
-                        Some(VirtualKeyCode::Escape) => running = false,
-                        Some(VirtualKeyCode::Add) => {
-                            zoomin_pressed = match input.state {
-                                ElementState::Pressed => true,
-                                ElementState::Released => false,
-                            }
-                        }
-                        Some(VirtualKeyCode::Subtract) => {
-                            zoomout_pressed = match input.state {
-                                ElementState::Pressed => true,
-                                ElementState::Released => false,
-                            }
-                        }
-                        Some(VirtualKeyCode::Tab) => {
-                            if input.state == ElementState::Pressed {
-                                let index = soldier.primary_weapon().kind.index();
-                                let index = (index + 1) % (WeaponKind::NoWeapon.index() + 1);
-                                soldier.weapons[soldier.active_weapon] = weapons[index];
-                            }
-                        }
-                        _ => soldier.update_keys(&input),
-                    },
-                    WindowEvent::MouseInput { state, button, .. } => {
-                        soldier.update_mouse_button(&(state, button));
-                    }
-                    WindowEvent::CursorMoved {
-                        position: logical_pos, ..
-                    } => {
-                        state.mouse.x = logical_pos.x as f32 * state.game_width / W as f32;
-                        state.mouse.y = logical_pos.y as f32 * state.game_height / H as f32;
-                    }
-                    _ => (),
-                }
-            }
-        });
+const DT: f64 = 1.0 / 60.0;
 
-        let dt = 1.0 / 60.0;
+impl EventHandler for Game {
+    fn update(&mut self) {
+        let dt = DT;
 
-        timecur = current_time();
-        timeacc += timecur - timeprv;
-        timeprv = timecur;
+        self.timecur = self.current_time();
+        self.timeacc += self.timecur - self.timeprv;
+        self.timeprv = self.timecur;
 
-        while timeacc >= dt {
-            timeacc -= dt;
+        while self.timeacc >= dt {
+            self.timeacc -= dt;
 
             // remove inactive bullets
 
             let mut i = 0;
-            while i < state.bullets.len() {
-                if !state.bullets[i].active {
-                    state.bullets.swap_remove(i);
+            while i < self.state.bullets.len() {
+                if !self.state.bullets[i].active {
+                    self.state.bullets.swap_remove(i);
                 } else {
                     i += 1;
                 }
@@ -181,42 +159,42 @@ fn main() {
 
             // update soldiers
 
-            soldier.update(&state, &mut emitter);
+            self.soldier.update(&self.state, &mut self.emitter);
 
             // update bullets
 
-            for bullet in state.bullets.iter_mut() {
-                bullet.update(&state.map);
+            for bullet in self.state.bullets.iter_mut() {
+                bullet.update(&self.state.map);
             }
 
             // create emitted objects
 
-            for item in emitter.drain(..) {
+            for item in self.emitter.drain(..) {
                 match item {
-                    EmitterItem::Bullet(params) => state.bullets.push(Bullet::new(&params)),
+                    EmitterItem::Bullet(params) => self.state.bullets.push(Bullet::new(&params)),
                 };
             }
 
             // update camera
 
-            state.camera_prev = state.camera;
-            state.mouse_prev = state.mouse;
+            self.state.camera_prev = self.state.camera;
+            self.state.mouse_prev = self.state.mouse;
 
-            if zoomin_pressed ^ zoomout_pressed {
-                state.zoom += iif!(zoomin_pressed, -1.0, 1.0) * dt as f32;
+            if self.zoomin_pressed ^ self.zoomout_pressed {
+                self.state.zoom += iif!(self.zoomin_pressed, -1.0, 1.0) * dt as f32;
             }
 
-            state.camera = {
-                let z = f32::exp(state.zoom);
-                let mut m = Vec2::zero();
+            self.state.camera = {
+                let z = f32::exp(self.state.zoom);
+                let mut m = Vec2::ZERO;
 
-                m.x = z * (state.mouse.x - state.game_width / 2.0) / 7.0
-                    * ((2.0 * 640.0 / state.game_width - 1.0)
-                        + (state.game_width - 640.0) / state.game_width * 0.0 / 6.8);
-                m.y = z * (state.mouse.y - state.game_height / 2.0) / 7.0;
+                m.x = z * (self.state.mouse.x - self.state.game_width / 2.0) / 7.0
+                    * ((2.0 * 640.0 / self.state.game_width - 1.0)
+                        + (self.state.game_width - 640.0) / self.state.game_width * 0.0 / 6.8);
+                m.y = z * (self.state.mouse.y - self.state.game_height / 2.0) / 7.0;
 
-                let mut cam_v = state.camera;
-                let p = soldier.particle.pos;
+                let mut cam_v = self.state.camera;
+                let p = self.soldier.particle.pos;
                 let norm = p - cam_v;
                 let s = norm * 0.14;
                 cam_v += s;
@@ -224,24 +202,62 @@ fn main() {
                 cam_v
             };
 
-            timecur = current_time();
-            timeacc += timecur - timeprv;
-            timeprv = timecur;
+            self.timecur = self.current_time();
+            self.timeacc += self.timecur - self.timeprv;
+            self.timeprv = self.timecur;
         }
+    }
 
-        let p = f64::min(1.0, f64::max(0.0, timeacc / dt));
+    fn draw(&mut self) {
+        let p = f64::clamp(self.timeacc / DT, 0.0, 1.0);
 
-        graphics.render_frame(
-            &mut context,
-            &state,
-            &soldier,
-            timecur - dt * (1.0 - p),
+        self.graphics.render_frame(
+            &mut self.context,
+            &self.state,
+            &self.soldier,
+            self.timecur - DT * (1.0 - p),
             p as f32,
         );
 
-        context.present();
+        self.context.present();
+    }
 
-        // only sleep if no vsync (or if vsync doesn't wait), also needs timeBeginPeriod(1)
-        // std::thread::sleep(std::time::Duration::from_millis(1));
+    fn key_down_event(&mut self, keycode: KeyCode, _keymods: KeyMods, repeat: bool) {
+        match keycode {
+            KeyCode::Escape => window::request_quit(),
+            KeyCode::KpAdd => self.zoomin_pressed = true,
+            KeyCode::KpSubtract => self.zoomout_pressed = true,
+            KeyCode::Tab => {
+                if !repeat {
+                    let soldier = &mut self.soldier;
+                    let index = soldier.primary_weapon().kind.index();
+                    let index = (index + 1) % (WeaponKind::NoWeapon.index() + 1);
+                    soldier.weapons[soldier.active_weapon] = self.weapons[index];
+                }
+            }
+            _ => self.soldier.update_keys(keycode, true),
+        }
+    }
+
+    fn key_up_event(&mut self, keycode: KeyCode, _keymods: KeyMods) {
+        match keycode {
+            KeyCode::KpAdd => self.zoomin_pressed = false,
+            KeyCode::KpSubtract => self.zoomout_pressed = false,
+            _ => self.soldier.update_keys(keycode, false),
+        }
+    }
+
+    fn mouse_button_down_event(&mut self, button: MouseButton, _x: f32, _y: f32) {
+        self.soldier.update_mouse_button(button, true);
+    }
+
+    fn mouse_button_up_event(&mut self, button: MouseButton, _x: f32, _y: f32) {
+        self.soldier.update_mouse_button(button, false);
+    }
+
+    fn mouse_motion_event(&mut self, x: f32, y: f32) {
+        let (w, h) = window::screen_size();
+        self.state.mouse.x = x * self.state.game_width / w;
+        self.state.mouse.y = y * self.state.game_height / h;
     }
 }

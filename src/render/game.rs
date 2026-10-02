@@ -11,7 +11,7 @@ pub struct GameGraphics {
 }
 
 impl GameGraphics {
-    pub fn new(_context: &mut Gfx2dContext) -> GameGraphics {
+    pub fn new() -> GameGraphics {
         GameGraphics {
             map: MapGraphics::empty(),
             soldier_graphics: SoldierGraphics::new(),
@@ -46,7 +46,7 @@ impl GameGraphics {
         );
 
         if false {
-            let px = h / context.wnd.window().get_inner_size().unwrap().to_physical(1.).height as f32;
+            let px = h / mq::window::screen_size().1;
             render_skeleton(soldier, &mut self.batch, px, frame_percent);
         }
 
@@ -74,8 +74,8 @@ impl GameGraphics {
     fn render_cursor(&mut self, context: &mut Gfx2dContext, state: &MainState) {
         let zoom = f32::exp(state.zoom);
         let (w, h) = (zoom * state.game_width, zoom * state.game_height);
-        let size = context.wnd.window().get_inner_size().unwrap().to_physical(1.);
-        let size = vec2(size.width as f32, size.height as f32);
+        let (sw, sh) = mq::window::screen_size();
+        let size = vec2(sw, sh);
         let x = zoom * f32::floor(state.mouse.x * size.x / w);
         let y = zoom * f32::floor(state.mouse.y * size.y / h);
         let screen = Transform::ortho(0.0, size.x, 0.0, size.y).matrix();
@@ -85,20 +85,20 @@ impl GameGraphics {
         self.batch.add_quad(
             None,
             &[
-                vertex(vec2(x, y) + vec2(0.0, -8.0), Vec2::zero(), rgb(0, 0, 0)),
-                vertex(vec2(x, y) + vec2(1.0, -8.0), Vec2::zero(), rgb(0, 0, 0)),
-                vertex(vec2(x, y) + vec2(1.0, 9.0), Vec2::zero(), rgb(0, 0, 0)),
-                vertex(vec2(x, y) + vec2(0.0, 9.0), Vec2::zero(), rgb(0, 0, 0)),
+                vertex(vec2(x, y) + vec2(0.0, -8.0), Vec2::ZERO, rgb(0, 0, 0)),
+                vertex(vec2(x, y) + vec2(1.0, -8.0), Vec2::ZERO, rgb(0, 0, 0)),
+                vertex(vec2(x, y) + vec2(1.0, 9.0), Vec2::ZERO, rgb(0, 0, 0)),
+                vertex(vec2(x, y) + vec2(0.0, 9.0), Vec2::ZERO, rgb(0, 0, 0)),
             ],
         );
 
         self.batch.add_quad(
             None,
             &[
-                vertex(vec2(x, y) + vec2(-8.0, 0.0), Vec2::zero(), rgb(0, 0, 0)),
-                vertex(vec2(x, y) + vec2(9.0, 0.0), Vec2::zero(), rgb(0, 0, 0)),
-                vertex(vec2(x, y) + vec2(9.0, 1.0), Vec2::zero(), rgb(0, 0, 0)),
-                vertex(vec2(x, y) + vec2(-8.0, 1.0), Vec2::zero(), rgb(0, 0, 0)),
+                vertex(vec2(x, y) + vec2(-8.0, 0.0), Vec2::ZERO, rgb(0, 0, 0)),
+                vertex(vec2(x, y) + vec2(9.0, 0.0), Vec2::ZERO, rgb(0, 0, 0)),
+                vertex(vec2(x, y) + vec2(9.0, 1.0), Vec2::ZERO, rgb(0, 0, 0)),
+                vertex(vec2(x, y) + vec2(-8.0, 1.0), Vec2::ZERO, rgb(0, 0, 0)),
             ],
         );
 
@@ -187,26 +187,36 @@ impl GameGraphics {
             let index = group.id();
 
             match *group {
-                gfx::Group::Soldier => for _ in gfx::Soldier::values() {
-                    self.sprites[index].push(main.sprites[imain].clone());
-                    imain += 1;
-                },
-                gfx::Group::Weapon => for _ in gfx::Weapon::values() {
-                    self.sprites[index].push(main.sprites[imain].clone());
-                    imain += 1;
-                },
-                gfx::Group::Spark => for _ in gfx::Spark::values() {
-                    self.sprites[index].push(main.sprites[imain].clone());
-                    imain += 1;
-                },
-                gfx::Group::Object => for _ in gfx::Object::values() {
-                    self.sprites[index].push(main.sprites[imain].clone());
-                    imain += 1;
-                },
-                gfx::Group::Interface => for _ in gfx::Interface::values() {
-                    self.sprites[index].push(intf.sprites[iintf].clone());
-                    iintf += 1;
-                },
+                gfx::Group::Soldier => {
+                    for _ in gfx::Soldier::values() {
+                        self.sprites[index].push(main.sprites[imain].clone());
+                        imain += 1;
+                    }
+                }
+                gfx::Group::Weapon => {
+                    for _ in gfx::Weapon::values() {
+                        self.sprites[index].push(main.sprites[imain].clone());
+                        imain += 1;
+                    }
+                }
+                gfx::Group::Spark => {
+                    for _ in gfx::Spark::values() {
+                        self.sprites[index].push(main.sprites[imain].clone());
+                        imain += 1;
+                    }
+                }
+                gfx::Group::Object => {
+                    for _ in gfx::Object::values() {
+                        self.sprites[index].push(main.sprites[imain].clone());
+                        imain += 1;
+                    }
+                }
+                gfx::Group::Interface => {
+                    for _ in gfx::Interface::values() {
+                        self.sprites[index].push(intf.sprites[iintf].clone());
+                        iintf += 1;
+                    }
+                }
             }
         }
     }

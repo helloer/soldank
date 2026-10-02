@@ -1,17 +1,3 @@
-#![crate_type = "lib"]
-#![crate_name = "gfx2d"]
-
-#[macro_use]
-extern crate gfx;
-extern crate cgmath;
-extern crate gfx_core;
-extern crate gfx_device_gl;
-extern crate gfx_window_glutin;
-extern crate glutin;
-extern crate image;
-
-include!("gfx_types.rs");
-
 mod batch;
 mod color;
 mod context;
@@ -30,12 +16,13 @@ pub use color::rgba;
 pub use context::Gfx2dContext;
 pub use context::Vertex;
 pub use context::vertex;
-pub use gfx::texture::FilterMethod;
-pub use gfx::texture::WrapMode;
+pub use miniquad as mq;
 pub use spritesheet::Sprite;
 pub use spritesheet::SpriteInfo;
 pub use spritesheet::Spritesheet;
+pub use texture::FilterMethod;
 pub use texture::Texture;
+pub use texture::WrapMode;
 pub use transform::Transform;
 
 pub mod gfx2d_extra {
