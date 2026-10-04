@@ -183,8 +183,9 @@ impl AnimData {
         };
 
         // StrToFloat returns Extended, so the scaling happens in extended precision
-        let number = |line: Option<&str>| -> Result<f64, DataError> {
-            line.and_then(|l| l.parse().ok())
+        let one_point_one = Ext::parse("1.1").unwrap();
+        let number = |line: Option<&str>| -> Result<Ext, DataError> {
+            line.and_then(Ext::parse)
                 .ok_or_else(|| DataError::parse(file, format!("expected a number, got {line:?}")))
         };
 
@@ -211,7 +212,10 @@ impl AnimData {
                     let _y = number(lines.next())?;
                     let z = number(lines.next())?;
 
-                    positions.push(vec2(fpc(-3.0 * x / 1.1), fpc(-3.0 * z)));
+                    // -SCALE * StrToFloat(r2) / 1.1 and -SCALE * StrToFloat(r4)
+                    let scale = Ext::from_i32(-3);
+                    let x = scale * x / one_point_one;
+                    positions.push(vec2(x.to_f32(), (scale * z).to_f32()));
                 }
             }
         }

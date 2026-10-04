@@ -34,6 +34,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy -p soldank --all-targets --features dev --locked -- -D warnings
 
   build:
     name: Build & test (${{ matrix.os }})
@@ -48,6 +49,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
+
+  wasm:
+    name: Browser build (wasm32)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p soldank --target wasm32-unknown-unknown --locked -- -D warnings
+      - run: web/build.sh --locked
 
   assets-tests:
     name: Tests with game assets
@@ -73,3 +87,10 @@ jobs:
         env:
           SOLDANK_ASSETS: ${{ github.workspace }}/soldat.smod
           SOLDANK_REQUIRE_ASSETS: "1"
+      - name: Performance budget (a tick under 1 ms with 32 players)
+        run: |
+          cargo bench -p soldank-core --bench tick --locked
+          cargo bench -p soldank-server --bench tick --locked
+        env:
+          SOLDANK_ASSETS: ${{ github.workspace }}/soldat.smod
+          SOLDANK_TICK_BUDGET_MS: "1"

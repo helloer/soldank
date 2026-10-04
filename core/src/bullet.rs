@@ -55,11 +55,14 @@ const PART_RADIUS: f32 = 7.0;
 /// Skeleton points checked for hits, in priority order: head, chest, hip, legs.
 const BODY_PARTS_PRIORITY: [usize; 7] = [12, 11, 10, 6, 5, 4, 3];
 const M79GRENADE_EXPLOSION_RADIUS: f32 = 64.0;
-const FRAGGRENADE_EXPLOSION_RADIUS: f32 = 85.0;
+pub(crate) const FRAGGRENADE_EXPLOSION_RADIUS: f32 = 85.0;
 const AFTER_EXPLOSION_RADIUS2: f32 = 50.0 * 50.0;
 const CLUSTERGRENADE_EXPLOSION_RADIUS: f32 = 35.0;
 // exactly representable, so FPC keeps them single precision
 const EXPLOSION_IMPACT_MULTIPLY: f32 = 3.75;
+/// `EXPLOSION_ANIMS`, `SMOKE_ANIMS`: frames of the explosion and smoke sparks.
+const EXPLOSION_ANIMS: i32 = 16;
+const SMOKE_ANIMS: i32 = 10;
 const EXPLOSION_DEADIMPACT_MULTIPLY: f32 = 4.5;
 const GRENADE_SURFACECOEF: f64 = 0.88;
 const BULLET_GRAVITY_MULTIPLIER: f32 = 2.25;
@@ -79,6 +82,10 @@ pub struct BulletParams {
     pub seed: Option<u16>,
     /// `CreateBullet`'s MustCreate: otherwise flames start one step ahead.
     pub must_create: bool,
+    /// `CreateBullet`'s Net: on the server, bots pay ammo only for these bullets.
+    pub net: bool,
+    /// The bullet can't hit its owner (`HitBody := Owner`, the mercy shot).
+    pub owner_immune: bool,
 }
 
 /// What a bullet did when it hit something (`TBullet.Hit` types).
@@ -86,6 +93,8 @@ pub struct BulletParams {
 pub enum HitKind {
     Wall,
     Blood,
+    /// Bullet pushed a thing (flag).
+    Thing,
     /// Bullet passed through a body (pierce).
     BodyHit,
     Ricochet,
@@ -120,6 +129,11 @@ pub struct Bullet {
     pub sprite: Option<sprites::Weapon>,
     /// Last soldier hit, who can't be hit again by this bullet.
     pub hit_body: Option<SoldierId>,
+    /// Things this bullet pushed and until when it can't push them again
+    /// (`ThingCollisions`).
+    pub thing_collisions: Vec<(usize, u64)>,
+    /// `HasHit`: it hurt a soldier already, which the weapon stats count once.
+    pub has_hit: bool,
 }
 
 /// Things a bullet update asks the world to do.
@@ -131,10 +145,19 @@ pub enum BulletOutcome {
     },
     /// New bullet created by this one (cluster grenade fragments).
     Spawn(BulletParams),
+    /// A thrown knife stuck somewhere and becomes a knife thing (created by the world
+    /// right after this bullet's update).
+    KnifeThing(Vec2),
+    /// It hurt another soldier who was alive until then (weapon stats).
+    Hurt {
+        victim: SoldierId,
+    },
     Killed {
         victim: SoldierId,
         killer: SoldierId,
-        how: DeathKind,
+        kill: Kill,
+        /// Weapon of the killing bullet.
+        weapon: WeaponKind,
     },
 }
 
@@ -142,10 +165,14 @@ pub enum BulletOutcome {
 /// `bullets` (an inactive placeholder sits in its slot) so explosions can reach the others.
 pub struct BulletCtx<'a> {
     pub config: &'a WorldConfig,
+    pub things: &'a mut [Thing],
+    pub tick: u64,
     pub soldiers: &'a mut SlotMap<SoldierId, Soldier>,
     pub bullets: &'a mut [Bullet],
     pub rng: &'a mut PascalRandom,
     pub outcomes: &'a mut Vec<BulletOutcome>,
+    pub sounds: &'a mut Vec<SoundEvent>,
+    pub sparks: &'a mut Vec<SparkSpawn>,
 }
 
 impl Bullet {
@@ -188,13 +215,18 @@ impl Bullet {
             hit_spot: Vec2::ZERO,
             seed,
             sprite: params.sprite,
-            hit_body: None,
+            hit_body: params.owner_immune.then_some(owner),
+            thing_collisions: Vec::new(),
+            has_hit: false,
         }
     }
 
     pub fn kill(&mut self) {
         self.active = false;
         self.particle.active = false;
+        // a bullet killed by a wall is revived for the rest of its update: thing pushes
+        // forget their cooldowns
+        self.thing_collisions.clear();
     }
 
     /// Port of `TBullet.Update`. Integration (`BulletParts.DoEulerTimeStep`) happens
@@ -248,9 +280,19 @@ impl Bullet {
         }
 
         // a bullet stopped by a wall can still hit a soldier in front of it
-        self.check_sprite_collision(dist, ctx);
+        let hit_p3 = self.check_sprite_collision(dist, ctx).unwrap_or(Vec2::ZERO);
+        if !self.active {
+            let a = if hit_p3.x != 0.0 {
+                hit_p3
+            } else if hit_p2.x != 0.0 {
+                hit_p2
+            } else {
+                hit_p
+            } - old_op;
+            dist = a.length();
+        }
 
-        // TODO: CheckThingCollision
+        self.check_thing_collision(dist, ctx);
 
         // count time out
         self.timeout -= 1;
@@ -290,6 +332,41 @@ impl Bullet {
         // flame rises
         if self.style == BulletStyle::Flame {
             self.particle.force.y = fpc(ext(self.particle.force.y) - 0.15);
+        }
+
+        // trails (Soldat gives them the bullet's number for an owner: none here)
+        let pos = self.particle.pos;
+        let none = SparkOwner::None;
+        if self.style == BulletStyle::FlameArrow {
+            if fx::random(2) == 0 {
+                ctx.sparks
+                    .push(SparkSpawn::new(pos, vec2(0.0, -0.5), 37, none, 40));
+            }
+            if fx::random(2) == 0 {
+                ctx.sparks
+                    .push(SparkSpawn::new(pos, vec2(0.0, -0.5), 36, none, 40));
+            }
+        }
+        if self.style == BulletStyle::LAWMissile {
+            ctx.sparks
+                .push(SparkSpawn::new(pos, vec2(0.0, -1.5), 59, none, 50));
+            if fx::random(2) == 0 {
+                let velocity = self.particle.velocity;
+                ctx.sparks.push(SparkSpawn::new(pos, velocity, 2, none, 5));
+            }
+        }
+        // bleeding from the body it went through
+        if self.hit_body.is_some() && fx::random(5) == 0 {
+            let velocity = self.particle.velocity * 0.5;
+            let owner = SparkOwner::Soldier(self.owner);
+            ctx.sparks
+                .push(SparkSpawn::new(pos, velocity, 4, owner, 90));
+        }
+
+        // its whoosh
+        if self.timeout == BULLET_TIMEOUT as i16 - 25 && self.style != BulletStyle::GaugeBullet {
+            ctx.sounds
+                .push(SoundEvent::at(Sfx::Bulletby, self.particle.pos));
         }
     }
 
@@ -335,8 +412,8 @@ impl Bullet {
 
         for b in 0..det_acc {
             let mut pos = vec2(x + b as f32 * step.x, y + b as f32 * step.y);
-            let kx = (pos.x / div).round() as i32;
-            let ky = (pos.y / div).round() as i32;
+            let kx = (pos.x / div).round_ties_even() as i32;
+            let ky = (pos.y / div).round_ties_even() as i32;
 
             if kx < -n || kx > n || ky < -n || ky > n {
                 self.kill();
@@ -398,8 +475,8 @@ impl Bullet {
                             }
                             pos = self.particle.pos + ahead;
 
-                            let kx = (pos.x / div).round() as i32;
-                            let ky = (pos.y / div).round() as i32;
+                            let kx = (pos.x / div).round_ties_even() as i32;
+                            let ky = (pos.y / div).round_ties_even() as i32;
 
                             if kx > -n && kx < n && ky > -n && ky < n {
                                 for &w2 in map.sector(kx, ky) {
@@ -444,6 +521,12 @@ impl Bullet {
                         }
                     }
                     BulletStyle::FragGrenade | BulletStyle::Flame => {
+                        if self.style == BulletStyle::FragGrenade
+                            && self.particle.velocity.length() > 1.5
+                        {
+                            ctx.sounds
+                                .push(SoundEvent::at(Sfx::GrenadeBounce, self.particle.pos));
+                        }
                         let (mut d, mut k) = (0.0, 0);
                         let perp =
                             map.closest_perpendicular(w as i32, self.particle.pos, &mut d, &mut k);
@@ -469,7 +552,8 @@ impl Bullet {
                     }
                     BulletStyle::ThrownKnife => {
                         self.particle.pos = pos - self.particle.velocity;
-                        // TODO: drop a combat knife thing (CreateThing OBJECT_COMBAT_KNIFE)
+                        ctx.outcomes
+                            .push(BulletOutcome::KnifeThing(self.particle.pos));
                         self.hit(HitKind::Wall, ctx);
                         self.kill();
                     }
@@ -513,7 +597,31 @@ impl Bullet {
                 | BulletStyle::ThrownKnife
                 | BulletStyle::M2Bullet => {
                     self.particle.pos = pos - self.particle.velocity;
-                    // TODO: thrown knives leave a knife thing
+                    if self.style == BulletStyle::ThrownKnife {
+                        ctx.outcomes
+                            .push(BulletOutcome::KnifeThing(self.particle.pos));
+                    }
+                    // dirt
+                    if many_sparks(ctx.config) {
+                        for _ in 0..2 {
+                            if fx::random(4) == 0 {
+                                let a = vec2(
+                                    (fx::random(100) as f32).sin(),
+                                    (fx::random(100) as f32).cos(),
+                                );
+                                let style = 44 + fx::random(4) as u8;
+                                ctx.sparks.push(SparkSpawn::new(
+                                    pos,
+                                    a,
+                                    style,
+                                    SparkOwner::None,
+                                    120,
+                                ));
+                            }
+                        }
+                    }
+                    ctx.sounds
+                        .push(SoundEvent::at(Sfx::Colliderhit, self.particle.pos));
                     self.hit(HitKind::Wall, ctx);
                     self.kill();
                 }
@@ -552,6 +660,69 @@ impl Bullet {
         None
     }
 
+    /// Port of `TBullet.CheckThingCollision`: bullets push flags (and other things that
+    /// collide with bullets).
+    fn check_thing_collision(&mut self, last_hit_dist: f32, ctx: &mut BulletCtx) {
+        const FLAG_PART_RADIUS: f32 = 10.0;
+        const THING_PUSH_MULTIPLIER: f32 = 9.0;
+        const THING_COLLISION_COOLDOWN: u64 = 60;
+
+        if self.style == BulletStyle::FragGrenade {
+            return;
+        }
+        let infiltration = ctx.config.game_mode == GameMode::Infiltration;
+
+        for (j, thing) in ctx.things.iter_mut().enumerate() {
+            if !thing.active
+                || self.timeout >= BULLET_TIMEOUT as i16 - 1
+                || !thing.collide_with_bullets
+                || thing.holding == Some(self.owner)
+                || (infiltration && thing.kind != ThingKind::BravoFlag)
+                || thing.kind == ThingKind::StationaryGun
+            {
+                continue;
+            }
+
+            let start = self.particle.pos;
+            let end = start + self.particle.velocity;
+            let Some((where_, pos)) = (1..=2).find_map(|i| {
+                line_circle_collision(start, end, thing.skeleton.pos(i), FLAG_PART_RADIUS)
+                    .map(|p| (i, p))
+            }) else {
+                continue;
+            };
+
+            // order collision
+            if last_hit_dist > -1.0 && (pos - self.particle.old_pos).length() > last_hit_dist {
+                break;
+            }
+
+            // push cooldown for this thing
+            if self
+                .thing_collisions
+                .iter()
+                .any(|&(num, end)| num == j && ctx.tick < end)
+            {
+                break;
+            }
+            self.thing_collisions
+                .push((j, ctx.tick + THING_COLLISION_COOLDOWN));
+
+            let thing_vel = thing.skeleton.pos(where_) - thing.skeleton.old_pos(where_);
+            let push = ctx.config.weapons.get(self.weapon).push * THING_PUSH_MULTIPLIER;
+            *thing.skeleton.pos_mut(where_) += (self.particle.velocity - thing_vel) * push;
+            thing.static_type = false;
+
+            if matches!(
+                self.style,
+                BulletStyle::Bullet | BulletStyle::FragGrenade | BulletStyle::GaugeBullet
+            ) {
+                self.hit(HitKind::Thing, ctx);
+            }
+            break;
+        }
+    }
+
     /// `TBullet.TargetableSprite`
     fn targetable(&self, id: SoldierId, soldier: &Soldier) -> bool {
         let owner_vulnerable_time = match self.style {
@@ -564,6 +735,7 @@ impl Bullet {
         soldier.active
             && (self.owner != id || self.timeout < owner_vulnerable_time)
             && self.hit_body != Some(id)
+            && !soldier.is_spectator()
     }
 
     /// Port of `TBullet.CheckSpriteCollision`: hits soldiers in order of distance and
@@ -651,7 +823,21 @@ impl Bullet {
             let mut norm = (pos - target.skeleton.pos(where_)) * 1.3;
             norm.y = -norm.y;
 
-            // TODO: weapons.ini NoCollision flags
+            if let Some(brain) = ctx.soldiers[id].brain.as_mut() {
+                brain.pissed_off = Some(self.owner);
+            }
+            let target = &ctx.soldiers[id];
+
+            let owner_team = ctx.soldiers.get(self.owner).map(|o| o.team);
+            if no_collision(
+                weapon.no_collision,
+                0,
+                target.team,
+                owner_team,
+                id == self.owner,
+            ) {
+                continue;
+            }
 
             if target.ceasefire_counter >= 0 {
                 continue;
@@ -677,18 +863,43 @@ impl Bullet {
                 weapon.modifier_head
             };
 
-            let owner = self.owner;
+            let (owner, bullet_weapon) = (self.owner, self.weapon);
             let damage = |ctx: &mut BulletCtx, amount: f32| {
                 let config = ctx.config;
-                if let Some(how) = health_hit(ctx.soldiers, id, owner, amount, where_, norm, config)
-                {
-                    ctx.outcomes.push(BulletOutcome::Killed {
-                        victim: id,
-                        killer: owner,
-                        how,
-                    });
-                }
+                let hurt = health_hit(
+                    ctx.soldiers,
+                    id,
+                    owner,
+                    amount,
+                    where_,
+                    norm,
+                    config,
+                    Some(bullet_weapon),
+                    ctx.rng,
+                );
+                outcomes_of_hurt(ctx, hurt, id, owner, bullet_weapon);
             };
+
+            // the slap of a hit, before it hurts (client sounds)
+            let hit_sound = |ctx: &mut BulletCtx, at: Vec2| {
+                let target = &ctx.soldiers[id];
+                let sound = if target.vest >= 1.0 {
+                    Sound::new(Sfx::Vesthit)
+                } else if target.dead_meat {
+                    Sound::new(Sfx::DeadHit)
+                } else {
+                    Sound::new(Sfx::HitArg).variants(3)
+                };
+                ctx.sounds.push(sound.at(at).into());
+            };
+
+            // the client's blood, unless a teammate was hit without friendly fire
+            let owner_team = ctx.soldiers.get(owner).map_or(Team::None, |s| s.team);
+            let victim_team = ctx.soldiers[id].team;
+            let bleeds = ctx.config.friendly_fire
+                || owner_team == Team::None
+                || owner_team != victim_team
+                || id == owner;
 
             match self.style {
                 BulletStyle::Bullet
@@ -701,11 +912,26 @@ impl Bullet {
                         kind: HitKind::Blood,
                         pos,
                     });
+                    if bleeds {
+                        self.hit_sparks(HitKind::Blood, ctx);
+                    }
+                    self.puff_and_shreds(ctx, bullet_velocity, pos, id, where_);
+                    hit_sound(ctx, pos);
 
                     let speed = bullet_velocity.length();
                     damage(ctx, speed * self.hit_multiply * modifier);
+                    // HitSpray (deathmatch: every hit counts)
+                    ctx.soldiers[id].hit_spray();
 
-                    // TODO: punches make the target drop its weapon (ThrowWeapon animation)
+                    // drop weapon when punched (deathmatch: everyone is solo)
+                    // TODO: team modes only for enemies
+                    if self.style == BulletStyle::Fist
+                        && !ctx.soldiers[id]
+                            .primary_weapon()
+                            .is_any(&[WeaponKind::Bow, WeaponKind::FlameBow])
+                    {
+                        ctx.soldiers[id].body_apply_animation(Anim::ThrowWeapon, 11);
+                    }
 
                     self.hit_body = Some(id);
 
@@ -727,6 +953,7 @@ impl Bullet {
                             kind: HitKind::BodyHit,
                             pos,
                         });
+                        self.hit_sparks(HitKind::BodyHit, ctx);
                         continue;
                     }
 
@@ -747,6 +974,16 @@ impl Bullet {
                             kind: HitKind::Blood,
                             pos,
                         });
+                        let victim = &ctx.soldiers[id];
+                        let spared = (!ctx.config.friendly_fire
+                            && owner_team != Team::None
+                            && owner_team == victim_team
+                            && !victim.local_player)
+                            || victim.bonus_style == Bonus::Flamegod;
+                        if !spared {
+                            self.hit_sparks(HitKind::Blood, ctx);
+                        }
+                        hit_sound(ctx, self.particle.pos);
 
                         let speed = self.particle.velocity.length();
                         damage(ctx, speed * self.hit_multiply * modifier);
@@ -799,6 +1036,8 @@ impl Bullet {
                                     sprite: flamer.bullet_sprite,
                                     seed: None,
                                     must_create: false,
+                                    net: false,
+                                    owner_immune: false,
                                 }));
                             }
 
@@ -820,13 +1059,24 @@ impl Bullet {
                         kind: HitKind::Blood,
                         pos,
                     });
+                    if bleeds {
+                        self.hit_sparks(HitKind::Blood, ctx);
+                    }
+                    let velocity = self.particle.velocity;
+                    self.puff_and_shreds(ctx, velocity, pos, id, where_);
+                    // the client sounds once per soldier; a knife passing through corpses
+                    // only sounds where it stops
+                    if !target_dead || ctx.config.realistic_mode {
+                        hit_sound(ctx, self.particle.pos);
+                    }
                     let speed = self.particle.velocity.length();
-                    damage(ctx, speed * self.hit_multiply * 0.01);
+                    damage(ctx, fpc(ext(speed * self.hit_multiply) * 0.01));
                     if !ctx.soldiers[id].dead_meat {
                         *ctx.soldiers[id].skeleton.pos_mut(where_) = Vec2::ZERO;
                     }
                     if !target_dead || ctx.config.realistic_mode {
-                        // TODO: drop a combat knife thing
+                        ctx.outcomes
+                            .push(BulletOutcome::KnifeThing(self.particle.pos));
                         self.kill();
                     }
                 }
@@ -856,6 +1106,25 @@ impl Bullet {
             pos: self.particle.pos,
         });
 
+        let pos = self.particle.pos;
+        let sound = match kind {
+            HitKind::Wall if self.timeout < BULLET_TIMEOUT as i16 - 5 => {
+                Some(Sound::new(Sfx::Ric).variants(4))
+            }
+            HitKind::Explode => Some(Sound::new(Sfx::M79Explosion)),
+            HitKind::FragGrenade => Some(Sound::new(Sfx::GrenadeExplosion)),
+            HitKind::Thing => Some(Sound::new(Sfx::Bodyfall)),
+            HitKind::ClusterGrenade => Some(Sound::new(Sfx::Clustergrenade)),
+            HitKind::Cluster => Some(Sound::new(Sfx::ClusterExplosion)),
+            HitKind::Flak => Some(Sound::new(Sfx::M2explode)),
+            HitKind::Ricochet => Some(Sound::new(Sfx::Ric5).variants(3)),
+            _ => None,
+        };
+        if let Some(sound) = sound {
+            ctx.sounds.push(sound.at(pos).into());
+        }
+        self.hit_sparks(kind, ctx);
+
         if matches!(
             kind,
             HitKind::Explode | HitKind::FragGrenade | HitKind::Cluster | HitKind::Flak
@@ -884,6 +1153,8 @@ impl Bullet {
                     sprite: cluster.bullet_sprite,
                     seed: None,
                     must_create: false,
+                    net: true,
+                    owner_immune: false,
                 }));
             }
         }
@@ -891,6 +1162,155 @@ impl Bullet {
 }
 
 impl Bullet {
+    /// A puff where the bullet went in, and now and then a shred of the clothes there
+    /// (client sparks of `CheckSpriteCollision`).
+    fn puff_and_shreds(
+        &self,
+        ctx: &mut BulletCtx,
+        velocity: Vec2,
+        hit: Vec2,
+        victim: SoldierId,
+        where_: usize,
+    ) {
+        if !many_sparks(ctx.config) {
+            return;
+        }
+        let owner = SparkOwner::Soldier(victim);
+        // (Soldat gives the puff its position for a velocity)
+        let a = self.particle.pos + vec2normalize(velocity) * 3.0;
+        ctx.sparks.push(SparkSpawn::new(a, a, 50, owner, 31));
+
+        let style = match where_ {
+            0..=4 => 49,
+            5..=11 => 48,
+            _ => return,
+        };
+        for _ in 0..2 {
+            if fx::random(8) == 0 {
+                let a = vec2(
+                    (fx::random(100) as f32).sin(),
+                    (fx::random(100) as f32).cos(),
+                );
+                ctx.sparks.push(SparkSpawn::new(hit, a, style, owner, 120));
+            }
+        }
+    }
+
+    /// The sparks of `TBullet.Hit` (client side).
+    fn hit_sparks(&self, kind: HitKind, ctx: &mut BulletCtx) {
+        let owner = SparkOwner::Soldier(self.owner);
+        let pos = self.particle.pos;
+        let velocity = self.particle.velocity;
+        let r = |n: i32| fx::random(n) as f32;
+        let mut spark = |pos: Vec2, b: Vec2, style: u8, life: i32| {
+            ctx.sparks.push(SparkSpawn::new(pos, b, style, owner, life));
+        };
+        let config = ctx.config;
+
+        match kind {
+            HitKind::Wall => {
+                let a = pos + velocity;
+                let mut b = velocity * -0.06;
+                b.y -= 1.0;
+                b.x *= 0.6 + r(8) / 10.0;
+                b.y *= 0.8 + r(4) / 10.0;
+                spark(a, b, 3, 60);
+                b.x *= 0.8 + r(4) / 10.0;
+                b.y *= 0.6 + r(8) / 10.0;
+                spark(a, b, 3, 65);
+                b *= 0.4 + r(4) / 10.0;
+                spark(a, b, 1, 60);
+                b.x *= 0.5 + r(4) / 10.0;
+                b.y *= 0.7 + r(8) / 10.0;
+                spark(a, b, 3, 50);
+                if config.max_sparks > SPARK_SLOTS - 5 {
+                    spark(a, Vec2::ZERO, 56, 22);
+                }
+            }
+            HitKind::Blood => {
+                let mut b = velocity * 0.025;
+                let steps: [(f32, f32, u8, i32, bool); 6] = [
+                    (1.2, 0.85, 4, 70, false),
+                    (0.745, 1.1, 4, 75, false),
+                    (0.9, 0.85, 4, 75, true),
+                    (1.2, 0.85, 5, 80, false),
+                    (1.0, 1.0, 5, 85, false),
+                    (0.5, 1.05, 5, 75, true),
+                ];
+                for (sx, sy, style, life, maybe) in steps {
+                    b.x *= sx;
+                    b.y *= sy;
+                    if !maybe || fx::random(2) == 0 {
+                        spark(pos, b, style, life);
+                    }
+                }
+                for _ in 0..7 {
+                    if fx::random(6) == 0 {
+                        let b = vec2(r(100).sin(), r(100).cos()) * 1.6;
+                        spark(pos, b, 4, 55);
+                    }
+                }
+            }
+            HitKind::Explode | HitKind::FragGrenade => {
+                let (smoke_life, style) = if kind == HitKind::Explode {
+                    (255, 12)
+                } else {
+                    (190, 17)
+                };
+                if many_sparks(config) {
+                    spark(pos, Vec2::ZERO, 60, smoke_life);
+                    spark(pos, Vec2::ZERO, 54, SMOKE_ANIMS * 4 + 10);
+                }
+                spark(pos, Vec2::ZERO, style, EXPLOSION_ANIMS * 3);
+            }
+            HitKind::Thing => {
+                let a = pos + velocity;
+                let b = velocity * -0.02 * (0.4 + r(4) / 10.0);
+                spark(a, b, 1, 70);
+            }
+            HitKind::ClusterGrenade | HitKind::Flak => spark(pos, Vec2::ZERO, 29, 55),
+            HitKind::Cluster => spark(pos, Vec2::ZERO, 28, EXPLOSION_ANIMS * 3),
+            HitKind::BodyHit => {
+                if few_sparks(config) {
+                    return;
+                }
+                let mut b = velocity * 0.075;
+                let steps: [(f32, f32, u8, i32); 4] = [
+                    (1.2, 0.85, 4, 60),
+                    (0.745, 1.1, 4, 65),
+                    (1.5, 0.4, 5, 70),
+                    (1.0, 1.0, 5, 75),
+                ];
+                for (sx, sy, style, life) in steps {
+                    b.x *= sx;
+                    b.y *= sy;
+                    spark(pos, b, style, life);
+                }
+                for _ in 0..4 {
+                    if fx::random(6) == 0 {
+                        let b = vec2(r(100).sin(), r(100).cos()) * 1.2;
+                        spark(pos, b, 4, 50);
+                    }
+                }
+            }
+            HitKind::Ricochet => {
+                let a = pos + velocity;
+                for (spread, style) in [
+                    (2.0, 26),
+                    (2.0, 26),
+                    (3.0, 26),
+                    (3.0, 26),
+                    (3.0, 26),
+                    (3.0, 27),
+                ] {
+                    let n = (spread * 20.0) as i32;
+                    let b = vec2(-spread + r(n) / 10.0, -spread + r(n) / 10.0);
+                    spark(a, b, style, 35);
+                }
+            }
+        }
+    }
+
     /// Port of `TBullet.ExplosionHit`: radius damage and knock-back, corpse pushing and
     /// chain explosions of nearby grenades/rockets.
     fn explosion_hit(
@@ -914,21 +1334,32 @@ impl Bullet {
         let len2 = |v: Vec2| v.x * v.x + v.y * v.y;
 
         let config = ctx.config;
+        let bullet_weapon = self.weapon;
         let damage = |ctx: &mut BulletCtx, id: SoldierId, amount: f32, impact: Vec2| {
-            if let Some(how) = health_hit(ctx.soldiers, id, owner, amount, 1, impact, config) {
-                ctx.outcomes.push(BulletOutcome::Killed {
-                    victim: id,
-                    killer: owner,
-                    how,
-                });
-            }
+            let weapon = Some(bullet_weapon);
+            let hurt = health_hit(
+                ctx.soldiers,
+                id,
+                owner,
+                amount,
+                1,
+                impact,
+                config,
+                weapon,
+                ctx.rng,
+            );
+            outcomes_of_hurt(ctx, hurt, id, owner, bullet_weapon);
         };
 
-        // TODO: weapons.ini NoCollision flags
+        let flags = ctx.config.weapons.get(self.weapon).no_collision;
+        let owner_team = ctx.soldiers.get(owner).map(|o| o.team);
         let ids: Vec<SoldierId> = ctx.soldiers.keys().collect();
         for id in ids {
             let soldier = &mut ctx.soldiers[id];
-            if !soldier.active {
+            if !soldier.active
+                || soldier.is_spectator()
+                || no_collision(flags, 3, soldier.team, owner_team, id == owner)
+            {
                 continue;
             }
 
@@ -967,6 +1398,11 @@ impl Bullet {
 
                 if s < radius2 {
                     let s = s.sqrt();
+                    let at = soldier.particle.pos;
+                    ctx.sounds.push(SoundEvent::at(Sfx::ExplosionErg, at));
+                    let owner = SparkOwner::Soldier(self.owner);
+                    ctx.sparks
+                        .push(SparkSpawn::new(at, vec2(0.0, -0.01), 5, owner, 80));
 
                     // collision respond
                     a.x = a.x * (1.0 / (s + 1.0)) * EXPLOSION_IMPACT_MULTIPLY;
@@ -985,6 +1421,8 @@ impl Bullet {
                         let amount = (1.0 / (s + 1.0)) * gun.hit_multiply * modifier;
                         damage(ctx, id, amount, a);
                     }
+
+                    ctx.soldiers[id].hit_spray();
                 }
             }
 
@@ -1020,7 +1458,23 @@ impl Bullet {
             }
         }
 
-        // TODO: push things (CollideWithBullets)
+        // push things
+        for thing in ctx
+            .things
+            .iter_mut()
+            .filter(|t| t.active && t.collide_with_bullets)
+        {
+            for j in 1..=thing.skeleton.particles().len().min(4) {
+                let mut a = pos - thing.skeleton.pos(j);
+                let s = len2(a);
+                if s < radius2 {
+                    let s = s.sqrt();
+                    a *= 0.5 * (1.0 / (s + 1.0)) * EXPLOSION_IMPACT_MULTIPLY;
+                    *thing.skeleton.old_pos_mut(j) += a;
+                    thing.static_type = false;
+                }
+            }
+        }
 
         // Soldat's `if not Typ in [...]` never exits, so every explosion sets off nearby
         // grenades and rockets
@@ -1040,7 +1494,110 @@ impl Bullet {
                 ctx.bullets[i] = other;
             }
         }
+
+        self.explosion_debris(kind, ctx);
     }
+
+    /// Dirt, sparks and flames flying from an explosion (client sparks).
+    fn explosion_debris(&self, kind: HitKind, ctx: &mut BulletCtx) {
+        if !many_sparks(ctx.config) {
+            return;
+        }
+        let frag = kind == HitKind::FragGrenade;
+        let velocity = self.particle.velocity;
+        let mut a = self.particle.pos - velocity;
+        let owner = SparkOwner::Soldier(self.owner);
+        let r = |n: i32| fx::random(n) as f32;
+        let fly = |scale: f32| {
+            let b = velocity * scale;
+            vec2(-b.x - 3.5 + r(70) / 10.0, b.y - 3.5 + r(65) / 10.0)
+        };
+        let mut spark = |a: Vec2, b: Vec2, style: u8, life: i32| {
+            ctx.sparks.push(SparkSpawn::new(a, b, style, owner, life));
+        };
+
+        // dirt
+        let (n, s) = if frag { (6, -0.2) } else { (7, -0.15) };
+        for _ in 0..n {
+            let b = fly(s);
+            for style in 40..=43 {
+                if fx::random(4) == 0 {
+                    spark(a, b, style, 180 + fx::random(50));
+                }
+            }
+        }
+        // smaller dirt
+        let (n, rnd) = if frag { (7, 4) } else { (5, 3) };
+        for _ in 0..n {
+            let b = fly(s);
+            for style in 44..=47 {
+                if fx::random(rnd) == 0 {
+                    spark(a, b, style, 120);
+                }
+            }
+        }
+        // sparks
+        let (n, rnd) = if frag { (3, 23) } else { (4, 22) };
+        for _ in 0..n {
+            let b = fly(-0.3);
+            for _ in 0..3 {
+                if fx::random(rnd) == 0 {
+                    spark(a, b, 2, 120);
+                }
+            }
+        }
+        // little flames
+        let (n, j, rnd, s) = if frag {
+            (3, 25.0, 50, -0.05)
+        } else {
+            (4, 20.0, 40, -0.1)
+        };
+        for _ in 0..n {
+            a.x = a.x - j + r(rnd);
+            a.y = a.y - j + r(rnd);
+            let b = fly(s);
+            spark(a, b, 64, 35);
+        }
+    }
+}
+
+/// What the world hears of a bullet's hit on soldier `id`.
+fn outcomes_of_hurt(
+    ctx: &mut BulletCtx,
+    hurt: Option<Hurt>,
+    id: SoldierId,
+    owner: SoldierId,
+    weapon: WeaponKind,
+) {
+    let Some(hurt) = hurt else { return };
+    if hurt.was_alive && id != owner {
+        ctx.outcomes.push(BulletOutcome::Hurt { victim: id });
+    }
+    if let Some(kill) = hurt.kill {
+        ctx.outcomes.push(BulletOutcome::Killed {
+            victim: id,
+            killer: owner,
+            kill,
+            weapon,
+        });
+    }
+}
+
+/// weapons.ini `NoCollision` flags (`WEAPON_NOCOLLISION_*`): bits 0-2 for bullets
+/// (`shift` 0), 3-5 for explosions (`shift` 3): enemy, team, self. Teams compare like
+/// `IsInSameTeam`, so in deathmatch everyone is in the same team.
+fn no_collision(
+    flags: u8,
+    shift: u8,
+    team: Team,
+    owner_team: Option<Team>,
+    is_owner: bool,
+) -> bool {
+    let bits = flags >> shift;
+    let same_team = owner_team == Some(team);
+    (bits & 1 != 0 && !same_team)
+        || (bits & 2 != 0 && same_team && !is_owner)
+        || (bits & 4 != 0 && is_owner)
 }
 
 /// Port of `TeamCollides` (including its Bravo/yellow typo, faithfully).

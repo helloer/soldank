@@ -191,6 +191,12 @@ impl DrawBatch {
         self.vbuf.unwrap()
     }
 
+    /// Vertices to change; a static batch uploads them again before it's next drawn.
+    pub fn vertices_mut(&mut self, range: Range<usize>) -> &mut [Vertex] {
+        self.updated = false;
+        &mut self.buf[range]
+    }
+
     pub fn len(&self) -> usize {
         self.buf.len()
     }

@@ -1,33 +1,89 @@
 ---
 source: core/tests/assets.rs
-expression: out
+expression: "run_script(&vfs, &script)"
 ---
-  0: pos ( -286.00,  -289.94) vel (  0.00,   0.06) legs Fall/2 body Stand/1 ground false bullets 0
- 15: pos ( -286.00,  -282.23) vel (  0.00,   0.88) legs Fall/7 body Stand/6 ground false bullets 0
- 30: pos ( -286.00,  -263.01) vel ( -0.00,   0.00) legs Fall/7 body Stand/11 ground true bullets 0
- 45: pos ( -286.00,  -262.95) vel (  0.00,   0.00) legs Fall/2 body Stand/16 ground false bullets 0
- 60: pos ( -286.00,  -262.94) vel (  0.00,   0.00) legs Fall/2 body Stand/4 ground false bullets 0
- 75: pos ( -286.00,  -262.94) vel (  0.00,   0.00) legs Fall/2 body Stand/9 ground false bullets 0
- 90: pos ( -286.00,  -262.93) vel (  0.00,   0.00) legs Run/2 body Stand/14 ground false bullets 0
-105: pos ( -277.41,  -262.96) vel (  1.04,   0.01) legs Run/17 body Stand/2 ground true bullets 0
-120: pos ( -263.66,  -262.99) vel (  0.11,  -0.04) legs Run/32 body Stand/7 ground true bullets 0
-135: pos ( -262.54,  -262.96) vel (  0.11,  -0.00) legs Run/9 body Stand/12 ground true bullets 0
-150: pos ( -261.92,  -262.88) vel ( -0.02,   0.00) legs JumpSide/2 body Stand/17 ground true bullets 0
-165: pos ( -264.14,  -273.26) vel ( -0.06,  -0.90) legs JumpSide/17 body Stand/5 ground false bullets 0
-180: pos ( -263.41,  -278.96) vel (  0.23,   0.06) legs Run/12 body Stand/10 ground false bullets 0
-195: pos ( -262.20,  -278.01) vel (  0.10,  -0.02) legs Run/27 body Stand/15 ground false bullets 0
-210: pos ( -264.57,  -279.16) vel ( -0.37,  -0.28) legs Run/2 body Stand/3 ground false bullets 0
-225: pos ( -273.12,  -287.72) vel ( -0.73,  -0.80) legs Run/2 body Stand/8 ground false bullets 0
-240: pos ( -286.77,  -303.48) vel ( -1.04,  -1.24) legs Run/2 body Stand/13 ground false bullets 0
-255: pos ( -304.80,  -325.43) vel ( -1.31,  -1.62) legs Run/2 body Stand/1 ground false bullets 0
-270: pos ( -324.70,  -346.51) vel ( -0.95,  -0.14) legs Fall/7 body Stand/6 ground false bullets 4
-285: pos ( -336.05,  -340.54) vel ( -0.15,   0.81) legs Fall/7 body Stand/11 ground false bullets 4
-300: pos ( -338.20,  -322.30) vel ( -0.13,   1.53) legs Fall/7 body Stand/16 ground false bullets 2
-315: pos ( -339.14,  -294.41) vel ( -0.11,   2.15) legs Crouch/10 body Aim/5 ground false bullets 0
-330: pos ( -340.73,  -257.49) vel ( -0.10,   2.68) legs Prone/2 body Prone/2 ground false bullets 0
-345: pos ( -342.10,  -213.14) vel ( -0.08,   3.13) legs Prone/17 body Prone/17 ground false bullets 0
-360: pos ( -339.34,  -162.20) vel (  0.51,   3.52) legs GetUp/17 body GetUp/17 ground false bullets 0
-375: pos ( -332.27,  -106.14) vel (  0.43,   3.85) legs Fall/7 body Stand/3 ground false bullets 0
-390: pos ( -328.92,   -73.70) vel (  0.00,   0.40) legs Fall/7 body Stand/8 ground false bullets 0
-405: pos ( -328.92,   -71.67) vel (  0.00,   0.00) legs Stand/2 body Stand/13 ground true bullets 0
-bullets fired: 80
+  0: pos ( -286.00,  -289.94) vel (  0.00,   0.06) legs 5/2 body 0/1 ground false bullets 0 ammo 7/23/87
+     force (0.00, 0.00) old (-286.00, -290.00) permanent false health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-290.14, -289.83) 12 (-285.76, -305.73) 15 (-280.75, -300.32) 16 (-287.69, -301.20)
+ 15: pos ( -286.00,  -282.23) vel (  0.00,   0.88) legs 5/7 body 0/6 ground false bullets 0 ammo 7/8/87
+     force (0.00, 0.00) old (-286.00, -283.13) permanent false health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-290.31, -283.18) 12 (-285.93, -297.90) 15 (-280.72, -292.95) 16 (-287.71, -293.33)
+ 30: pos ( -286.00,  -264.62) vel (  0.00,   0.00) legs 0/1 body 0/11 ground false bullets 0 ammo 7/0/87
+     force (0.00, 0.00) old (-286.00, -264.62) permanent false health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-290.13, -264.56) 12 (-286.06, -280.67) 15 (-280.78, -277.02) 16 (-287.71, -276.06)
+ 45: pos ( -286.00,  -263.14) vel (  0.00,   0.00) legs 0/2 body 0/16 ground true bullets 0 ammo 7/0/87
+     force (0.00, -0.06) old (-286.00, -263.14) permanent true health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-290.13, -263.08) 12 (-285.91, -279.15) 15 (-280.78, -275.64) 16 (-287.70, -274.58)
+ 60: pos ( -286.00,  -263.14) vel (  0.00,   0.00) legs 0/7 body 0/4 ground true bullets 0 ammo 7/0/87
+     force (0.00, -0.06) old (-286.00, -263.14) permanent true health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-290.13, -263.08) 12 (-285.84, -279.22) 15 (-280.78, -275.73) 16 (-287.70, -274.68)
+ 75: pos ( -286.00,  -263.14) vel (  0.00,   0.00) legs 0/12 body 0/9 ground true bullets 0 ammo 7/0/87
+     force (0.00, -0.06) old (-286.00, -263.14) permanent true health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-290.13, -263.08) 12 (-286.03, -279.33) 15 (-280.79, -275.78) 16 (-287.71, -274.73)
+ 90: pos ( -286.00,  -263.14) vel (  0.00,   0.00) legs 1/2 body 0/14 ground true bullets 0 ammo 7/0/87
+     force (0.12, -0.02) old (-286.00, -263.14) permanent true health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-292.80, -265.30) 12 (-285.97, -278.70) 15 (-280.79, -275.21) 16 (-287.71, -274.11)
+105: pos ( -276.31,  -263.27) vel (  1.03,  -0.06) legs 1/17 body 0/2 ground true bullets 0 ammo 7/0/87
+     force (0.12, -0.02) old (-276.31, -263.11) permanent true health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-275.50, -265.77) 12 (-276.11, -279.13) 15 (-271.11, -275.76) 16 (-278.01, -274.59)
+120: pos ( -263.71,  -263.21) vel (  0.11,   0.00) legs 1/32 body 0/7 ground true bullets 0 ammo 7/0/87
+     force (0.12, -0.02) old (-263.71, -263.18) permanent true health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-262.53, -263.27) 12 (-263.57, -278.33) 15 (-258.46, -275.21) 16 (-265.30, -273.75)
+135: pos ( -262.91,  -263.21) vel ( -0.00,  -0.00) legs 1/9 body 0/12 ground true bullets 0 ammo 7/0/87
+     force (0.12, -0.02) old (-262.91, -263.17) permanent true health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-268.53, -266.30) 12 (-262.71, -278.56) 15 (-257.55, -275.42) 16 (-264.39, -273.96)
+150: pos ( -262.00,  -263.17) vel ( -0.06,   0.00) legs 4/2 body 0/17 ground true bullets 0 ammo 7/0/87
+     force (0.00, 0.00) old (-262.00, -263.17) permanent true health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-266.14, -263.10) 12 (-261.90, -279.16) 15 (-257.41, -277.66) 16 (-263.70, -274.60)
+165: pos ( -263.88,  -273.54) vel ( -0.03,  -0.90) legs 4/17 body 0/5 ground false bullets 0 ammo 7/0/87
+     force (0.00, 0.00) old (-263.85, -272.63) permanent false health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-269.68, -277.47) 12 (-263.80, -289.75) 15 (-258.96, -287.46) 16 (-265.59, -285.19)
+180: pos ( -262.73,  -279.23) vel (  0.26,   0.06) legs 1/12 body 0/10 ground false bullets 0 ammo 7/0/87
+     force (0.03, 0.00) old (-262.98, -279.29) permanent false health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-266.50, -282.60) 12 (-262.79, -294.95) 15 (-257.67, -292.13) 16 (-264.44, -290.35)
+195: pos ( -262.22,  -278.03) vel ( -0.06,   0.00) legs 1/27 body 0/15 ground false bullets 0 ammo 7/0/87
+     force (0.03, 0.00) old (-262.22, -278.03) permanent false health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-258.06, -279.51) 12 (-262.10, -293.26) 15 (-257.13, -290.62) 16 (-263.85, -288.68)
+210: pos ( -263.95,  -279.17) vel ( -0.30,  -0.32) legs 1/2 body 0/3 ground false bullets 0 ammo 7/0/87
+     force (-0.03, -0.10) old (-263.66, -278.84) permanent false health 150.00 jets 215 bonus 0/-1
+     skeleton 1 (-257.15, -281.33) 12 (-264.13, -294.66) 15 (-268.72, -292.83) 16 (-262.26, -290.13)
+225: pos ( -271.54,  -288.28) vel ( -0.67,  -0.83) legs 1/2 body 0/8 ground false bullets 0 ammo 7/0/87
+     force (-0.03, -0.10) old (-270.86, -287.44) permanent false health 150.00 jets 200 bonus 0/-1
+     skeleton 1 (-264.74, -290.44) 12 (-271.49, -303.86) 15 (-276.39, -301.70) 16 (-269.83, -299.26)
+240: pos ( -284.36,  -304.52) vel ( -0.99,  -1.27) legs 1/2 body 0/13 ground false bullets 0 ammo 7/0/87
+     force (-0.03, -0.10) old (-283.36, -303.24) permanent false health 150.00 jets 185 bonus 0/-1
+     skeleton 1 (-277.56, -306.68) 12 (-284.36, -320.09) 15 (-289.44, -317.21) 16 (-282.65, -315.50)
+255: pos ( -301.68,  -326.88) vel ( -1.27,  -1.65) legs 1/2 body 0/1 ground false bullets 0 ammo 7/0/87
+     force (-0.03, -0.10) old (-300.40, -325.22) permanent false health 150.00 jets 170 bonus 0/-1
+     skeleton 1 (-294.88, -329.04) 12 (-301.91, -342.37) 15 (-306.98, -338.13) 16 (-299.99, -337.84)
+270: pos ( -320.82,  -347.93) vel ( -0.77,   0.21) legs 5/7 body 0/2 ground false bullets 0 ammo 6/13/87
+     force (0.00, 0.00) old (-321.27, -349.15) permanent false health 150.00 jets 172 bonus 0/-1
+     skeleton 1 (-316.96, -350.09) 12 (-321.56, -364.74) 15 (-323.80, -354.66) 16 (-319.58, -360.24)
+285: pos ( -331.62,  -338.11) vel ( -0.66,   1.01) legs 5/7 body 0/7 ground false bullets 0 ammo 6/1/87
+     force (0.00, 0.00) old (-330.95, -339.13) permanent false health 150.00 jets 179 bonus 0/-1
+     skeleton 1 (-327.32, -339.05) 12 (-331.74, -353.75) 15 (-333.96, -343.50) 16 (-329.92, -349.21)
+300: pos ( -337.22,  -316.93) vel ( -0.13,   1.72) legs 5/7 body 0/12 ground false bullets 0 ammo 6/0/87
+     force (0.00, 0.00) old (-337.09, -318.66) permanent false health 150.00 jets 187 bonus 0/-1
+     skeleton 1 (-341.53, -317.87) 12 (-337.21, -332.63) 15 (-332.19, -326.15) 16 (-338.93, -328.03)
+315: pos ( -339.04,  -286.00) vel ( -0.11,   2.31) legs 5/7 body 0/17 ground false bullets 0 ammo 6/0/87
+     force (0.00, 0.00) old (-338.93, -288.34) permanent false health 150.00 jets 194 bonus 0/-1
+     skeleton 1 (-343.35, -286.94) 12 (-338.89, -301.67) 15 (-333.75, -296.63) 16 (-340.74, -297.10)
+330: pos ( -340.60,  -246.81) vel ( -0.10,   2.82) legs 34/2 body 34/2 ground false bullets 0 ammo 6/0/87
+     force (0.00, 0.00) old (-340.50, -249.66) permanent false health 150.00 jets 202 bonus 0/-1
+     skeleton 1 (-344.81, -246.69) 12 (-340.25, -256.65) 15 (-335.28, -252.40) 16 (-342.10, -250.83)
+345: pos ( -341.95,  -200.51) vel ( -0.08,   3.25) legs 34/17 body 34/17 ground false bullets 0 ammo 6/0/87
+     force (0.00, 0.00) old (-341.86, -203.80) permanent false health 150.00 jets 209 bonus 0/-1
+     skeleton 1 (-348.46, -200.85) 12 (-337.35, -209.67) 15 (-335.74, -211.30) 16 (-341.89, -207.97)
+360: pos ( -341.62,  -175.93) vel (  0.00,   0.38) legs 39/17 body 39/17 ground false bullets 0 ammo 6/0/87
+     force (0.00, 0.00) old (-341.62, -176.32) permanent false health 150.00 jets 218 bonus 0/-1
+     skeleton 1 (-347.10, -175.53) 12 (-341.38, -186.64) 15 (-336.95, -184.14) 16 (-342.61, -180.01)
+375: pos ( -340.64,  -163.95) vel (  0.00,   1.16) legs 5/7 body 0/3 ground false bullets 0 ammo 6/0/87
+     force (0.00, 0.00) old (-340.64, -165.12) permanent false health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-344.95, -164.89) 12 (-340.49, -179.56) 15 (-336.75, -179.26) 16 (-342.33, -175.04)
+390: pos ( -340.64,  -140.87) vel (  0.00,   1.83) legs 5/7 body 0/8 ground false bullets 0 ammo 6/0/87
+     force (0.00, 0.00) old (-340.64, -142.71) permanent false health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-344.95, -141.81) 12 (-340.73, -156.55) 15 (-337.16, -156.67) 16 (-342.35, -151.98)
+405: pos ( -339.65,  -108.24) vel (  0.00,   2.40) legs 5/7 body 0/13 ground false bullets 0 ammo 6/0/87
+     force (0.00, 0.00) old (-339.65, -110.67) permanent false health 150.00 jets 226 bonus 0/-1
+     skeleton 1 (-343.81, -109.03) 12 (-339.71, -123.92) 15 (-336.72, -124.61) 16 (-341.36, -119.36)
+bullets fired: 2

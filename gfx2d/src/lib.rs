@@ -14,7 +14,10 @@ pub use color::Color;
 pub use color::rgb;
 pub use color::rgba;
 pub use context::Gfx2dContext;
+pub use context::RenderTarget;
 pub use context::Vertex;
+pub use context::Viewport;
+pub use context::letterbox;
 pub use context::vertex;
 pub use image;
 pub use miniquad as mq;
@@ -27,6 +30,7 @@ pub use texture::WrapMode;
 pub use transform::Transform;
 
 pub mod gfx2d_extra {
+    pub use super::texture::decode_gif_frames;
     pub use super::texture::decode_image_rgba;
     pub use super::texture::premultiply_image;
     pub use super::texture::remove_color_key;

@@ -1445,12 +1445,12 @@ fn apply_weapons_mod(gun: &mut Weapon, ini: &Ini) -> Result<(), String> {
 }
 
 /// Minimal case-insensitive ini reader (`TMemIniFile`).
-struct Ini {
+pub(crate) struct Ini {
     sections: Vec<(String, Vec<(String, String)>)>,
 }
 
 impl Ini {
-    fn parse(text: &str) -> Ini {
+    pub(crate) fn parse(text: &str) -> Ini {
         let mut sections: Vec<(String, Vec<(String, String)>)> = Vec::new();
         for line in text.lines().map(str::trim) {
             if line.is_empty() || line.starts_with(';') {
@@ -1467,19 +1467,19 @@ impl Ini {
         Ini { sections }
     }
 
-    fn section(&self, name: &str) -> Option<&[(String, String)]> {
+    pub(crate) fn section(&self, name: &str) -> Option<&[(String, String)]> {
         self.sections
             .iter()
             .find(|(n, _)| n.eq_ignore_ascii_case(name))
             .map(|(_, values)| values.as_slice())
     }
 
-    fn has_section(&self, name: &str) -> bool {
+    pub(crate) fn has_section(&self, name: &str) -> bool {
         !name.is_empty() && self.section(name).is_some()
     }
 
     /// `TStringList.Values`: first matching key, empty values count as missing.
-    fn get(&self, section: &str, key: &str) -> Option<&str> {
+    pub(crate) fn get(&self, section: &str, key: &str) -> Option<&str> {
         self.section(section)?
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(key))

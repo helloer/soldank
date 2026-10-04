@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["client", "core", "gfx2d"]
+members = ["client", "core", "gfx2d", "server"]
 default-members = ["client"]
 
 [workspace.package]
@@ -14,14 +14,22 @@ authors = ["helloer <im.helloer@gmail.com>"]
 soldank-core = { path = "core" }
 gfx2d = { path = "gfx2d" }
 
+ab_glyph = "0.2.32"
 anyhow = "1.0"
+bitcode = { version = "0.6", features = ["derive"] }
 bitflags = "2.13"
 byteorder = "1.5"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6", features = ["derive", "env"] }
+egui = "0.31"
+egui-miniquad = "0.16"
 glam = "0.33"
-image = "0.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
 insta = "1.48"
+kira = { version = "0.12.5", default-features = false, features = ["cpal", "wav", "pcm", "adpcm"] }
 miniquad = "0.4.11"
+renet = "2"
+renet_netcode = "2"
 rust-ini = "0.21"
 slotmap = "1.1"
 tempfile = "3.27"

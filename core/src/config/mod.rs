@@ -9,7 +9,7 @@ mod console;
 mod cvar;
 mod parse;
 
-pub use console::{Bindings, Console, Deferred};
+pub use console::{Bindings, Console, Deferred, normalize_key};
 pub use cvar::{Cvar, CvarFlags, CvarValue, Cvars};
 pub use parse::{split_commands, tokenize};
 

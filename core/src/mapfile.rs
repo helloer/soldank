@@ -6,7 +6,7 @@ use std::io::{self, Cursor, Read};
 const MAX_POLYS: i32 = 5000;
 //const MIN_SECTOR: i32 = -25;
 const MAX_SECTOR: i32 = 25;
-const MIN_SECTORZ: i32 = -35;
+pub(crate) const MIN_SECTORZ: i32 = -35;
 const MAX_SECTORZ: i32 = 35;
 //const TILESECTOR: i32 = 3;
 //const MIN_TILE: i32 = MIN_SECTOR * TILESECTOR;
@@ -128,7 +128,7 @@ pub struct MapSector {
     pub polys: Vec<u16>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MapProp {
     pub active: bool,
     pub style: u16,
@@ -144,13 +144,13 @@ pub struct MapProp {
     pub level: u8,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MapScenery {
     pub filename: String,
     pub date: i32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MapCollider {
     pub active: bool,
     pub x: f32,
@@ -158,7 +158,7 @@ pub struct MapCollider {
     pub radius: f32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MapSpawnpoint {
     pub active: bool,
     pub x: i32,
@@ -167,6 +167,7 @@ pub struct MapSpawnpoint {
 }
 
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct MapFile {
     pub filename: String,
     pub version: i32,
@@ -190,6 +191,8 @@ pub struct MapFile {
     pub scenery: Vec<MapScenery>,
     pub colliders: Vec<MapCollider>,
     pub spawnpoints: Vec<MapSpawnpoint>,
+    /// Bot paths (`BotPath`); connections are 1-based indices into this list.
+    pub waypoints: Vec<Waypoint>,
     pub perps: Vec<[Vec2; 3]>,
 }
 
@@ -223,6 +226,16 @@ impl MapFile {
         MapFile::parse(&path, &data)
     }
 
+    /// The base of a team's flag (`Map.FlagSpawn`): the first active alpha (5) or
+    /// bravo (6) flag spawn point.
+    pub fn flag_spawn(&self, bravo: bool) -> Option<Vec2> {
+        let team = if bravo { 6 } else { 5 };
+        self.spawnpoints
+            .iter()
+            .find(|s| s.active && s.team == team)
+            .map(|s| vec2(s.x as f32, s.y as f32))
+    }
+
     /// Parses a `.pms` map.
     pub fn parse(filename: &str, data: &[u8]) -> Result<MapFile, DataError> {
         Self::read(filename, &mut Cursor::new(data))
@@ -237,7 +250,8 @@ impl MapFile {
         let bg_color_top = read_color(buf)?;
         let bg_color_bottom = read_color(buf)?;
         // TPolyMap.LoadData gives 19% more jet fuel than the map file says ("quickfix")
-        let start_jet = 119 * buf.read_i32::<LittleEndian>()? / 100;
+        // (in 64 bits, like FPC on x86_64)
+        let start_jet = (119 * i64::from(buf.read_i32::<LittleEndian>()?) / 100) as i32;
         let grenade_packs = buf.read_u8()?;
         let medikits = buf.read_u8()?;
         let weather = buf.read_u8()?;
@@ -416,12 +430,26 @@ impl MapFile {
         let mut spawnpoints: Vec<MapSpawnpoint> = Vec::new();
 
         for _i in 0..n {
-            let active = buf.read_i32::<LittleEndian>()? != 0;
+            // a byte and 3 bytes of record padding
+            let active = buf.read_u8()? != 0;
+            buf.set_position(buf.position() + 3);
             let x = buf.read_i32::<LittleEndian>()?;
             let y = buf.read_i32::<LittleEndian>()?;
             let team = buf.read_i32::<LittleEndian>()?;
+            // TPolyMap.LoadData disables far away spawn points
+            let active = active && x.wrapping_abs() < 2_000_000 && y.wrapping_abs() < 2_000_000;
 
             spawnpoints.push(MapSpawnpoint { active, x, y, team });
+        }
+
+        // bot waypoints (older maps may end before them)
+        let mut waypoints = Vec::new();
+        if let Ok(n) = buf.read_i32::<LittleEndian>()
+            && (0..=MAX_WAYPOINTS).contains(&n)
+        {
+            for _ in 0..n {
+                waypoints.push(read_waypoint(buf)?);
+            }
         }
 
         Ok(MapFile {
@@ -446,6 +474,7 @@ impl MapFile {
             scenery,
             colliders,
             spawnpoints,
+            waypoints,
             perps,
         })
     }
@@ -471,10 +500,10 @@ impl MapFile {
         }
 
         let div = self.sectors_division as f32;
-        let ax = (a.x.min(b.x) / div).round() as i32;
-        let ay = (a.y.min(b.y) / div).round() as i32;
-        let bx = (a.x.max(b.x) / div).round() as i32;
-        let by = (a.y.max(b.y) / div).round() as i32;
+        let ax = (a.x.min(b.x) / div).round_ties_even() as i32;
+        let ay = (a.y.min(b.y) / div).round_ties_even() as i32;
+        let bx = (a.x.max(b.x) / div).round_ties_even() as i32;
+        let by = (a.y.max(b.y) / div).round_ties_even() as i32;
 
         if ax > MAX_SECTORZ || bx < MIN_SECTORZ || ay > MAX_SECTORZ || by < MIN_SECTORZ {
             return None;
@@ -531,8 +560,8 @@ impl MapFile {
     pub fn collision_test(&self, pos: Vec2, is_flag: bool) -> Option<Vec2> {
         use PolyType::*;
 
-        let kx = (pos.x / self.sectors_division as f32).round() as i32;
-        let ky = (pos.y / self.sectors_division as f32).round() as i32;
+        let kx = (pos.x / self.sectors_division as f32).round_ties_even() as i32;
+        let ky = (pos.y / self.sectors_division as f32).round_ties_even() as i32;
         let n = self.sectors_num;
 
         if !(kx > -n && kx < n && ky > -n && ky < n) {
@@ -743,8 +772,8 @@ impl MapFile {
 
     pub fn sector_polys(&self, pos: Vec2) -> &[u16] {
         let num = self.sectors_num;
-        let kx = (pos.x / self.sectors_division as f32).round() as i32;
-        let ky = (pos.y / self.sectors_division as f32).round() as i32;
+        let kx = (pos.x / self.sectors_division as f32).round_ties_even() as i32;
+        let ky = (pos.y / self.sectors_division as f32).round_ties_even() as i32;
 
         if kx >= -num && kx <= num && ky >= -num && ky <= num {
             let i = (kx + num) * (2 * num + 1) + (ky + num);
@@ -757,6 +786,83 @@ impl MapFile {
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+const MAX_WAYPOINTS: i32 = 5000;
+pub(crate) const MAX_CONNECTIONS: usize = 20;
+
+/// What a bot does when it reaches a waypoint (`TWaypointAction`).
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+pub enum WaypointAction {
+    #[default]
+    None,
+    StopAndCamp,
+    Wait1Second,
+    Wait5Seconds,
+    Wait10Seconds,
+    Wait15Seconds,
+    Wait20Seconds,
+}
+
+/// A bot path node (`TWaypoint`).
+#[derive(Debug, Clone, Default)]
+pub struct Waypoint {
+    pub active: bool,
+    pub id: i32,
+    pub x: i32,
+    pub y: i32,
+    pub left: bool,
+    pub right: bool,
+    pub up: bool,
+    pub down: bool,
+    pub jets: bool,
+    pub path_num: u8,
+    pub action: WaypointAction,
+    pub connections_num: i32,
+    /// 1-based waypoint indices; all 20 slots as stored (`ConnectionsNum` are used).
+    pub connections: [i32; MAX_CONNECTIONS],
+}
+
+fn read_waypoint(buf: &mut Cursor<&[u8]>) -> io::Result<Waypoint> {
+    let active = buf.read_u8()? != 0;
+    buf.set_position(buf.position() + 3);
+    let id = buf.read_i32::<LittleEndian>()?;
+    let x = buf.read_i32::<LittleEndian>()?;
+    let y = buf.read_i32::<LittleEndian>()?;
+    let mut flag = || -> io::Result<bool> { Ok(buf.read_u8()? != 0) };
+    let (left, right, up, down, jets) = (flag()?, flag()?, flag()?, flag()?, flag()?);
+    let path_num = buf.read_u8()?;
+    let action = match buf.read_u8()? {
+        1 => WaypointAction::StopAndCamp,
+        2 => WaypointAction::Wait1Second,
+        3 => WaypointAction::Wait5Seconds,
+        4 => WaypointAction::Wait10Seconds,
+        5 => WaypointAction::Wait15Seconds,
+        6 => WaypointAction::Wait20Seconds,
+        _ => WaypointAction::None,
+    };
+    buf.set_position(buf.position() + 5);
+    let connections_num = buf.read_i32::<LittleEndian>()?;
+    let mut connections = [0; MAX_CONNECTIONS];
+    for c in &mut connections {
+        *c = buf.read_i32::<LittleEndian>()?;
+    }
+
+    Ok(Waypoint {
+        active: active && x.wrapping_abs() < 2_000_000 && y.wrapping_abs() < 2_000_000,
+        id,
+        x,
+        y,
+        left,
+        right,
+        up,
+        down,
+        jets,
+        path_num,
+        action,
+        connections_num,
+        connections,
+    })
 }
 
 pub fn read_string<T: Read>(reader: &mut T, length: u32) -> io::Result<String> {

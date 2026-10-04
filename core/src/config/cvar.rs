@@ -200,6 +200,28 @@ impl Cvars {
         Ok(())
     }
 
+    /// Sets a cvar now, `INIT_ONLY` ones too: a server's value (`ClientHandleSyncCvars`), a
+    /// demo's, the settings menu's.
+    pub fn set_now(&mut self, name: &str, input: &str) -> Result<()> {
+        let cvar = self
+            .vars
+            .get_mut(name)
+            .ok_or_else(|| ConfigError::Unknown(name.to_owned()))?;
+        cvar.value = cvar.parse(input)?;
+        Ok(())
+    }
+
+    /// A program's own default for a cvar (the client's bots for a local game): the value too.
+    pub fn set_default(&mut self, name: &str, input: &str) -> Result<()> {
+        let cvar = self
+            .vars
+            .get_mut(name)
+            .ok_or_else(|| ConfigError::Unknown(name.to_owned()))?;
+        cvar.default = cvar.parse(input)?;
+        cvar.value = cvar.default.clone();
+        Ok(())
+    }
+
     pub fn reset(&mut self, name: &str) -> Result<()> {
         let cvar = self
             .vars
@@ -316,5 +338,8 @@ mod tests {
         cvars.set("sv_gravity", "0.2").unwrap();
         cvars.reset("sv_gravity").unwrap();
         assert_eq!(cvars.float("sv_gravity"), 0.06);
+        // a server's settings still come through
+        cvars.set_now("sv_realisticmode", "1").unwrap();
+        assert!(cvars.bool("sv_realisticmode"));
     }
 }

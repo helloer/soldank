@@ -33,7 +33,50 @@ pub struct Deferred {
     pub args: Vec<String>,
 }
 
-/// Key name (lowercase, e.g. `a`, `space`, `mouse1`) to command line.
+/// A key name as bindings store it: lowercase like `a`, `space`, `kpadd`, `alt+f3`.
+/// Soldat's configs name keys like SDL does (`A`, `/`, `Left Shift`, `Keypad +`,
+/// `MOUSE3`), so those names map to the same keys.
+pub fn normalize_key(name: &str) -> String {
+    let name = name.to_lowercase();
+    let (modifier, key) = match name.rsplit_once('+') {
+        // "alt+f3", but "keypad +" or "+" alone are keys
+        Some((m, k)) if !k.is_empty() && matches!(m, "alt" | "ctrl" | "shift") => (Some(m), k),
+        _ => (None, name.as_str()),
+    };
+    let key = match key {
+        "/" => "slash".to_string(),
+        "\\" => "backslash".to_string(),
+        "." => "period".to_string(),
+        "," => "comma".to_string(),
+        ";" => "semicolon".to_string(),
+        "'" => "apostrophe".to_string(),
+        "-" => "minus".to_string(),
+        "=" => "equal".to_string(),
+        "[" => "leftbracket".to_string(),
+        "]" => "rightbracket".to_string(),
+        "`" => "graveaccent".to_string(),
+        "return" => "enter".to_string(),
+        "left ctrl" => "leftcontrol".to_string(),
+        "right ctrl" => "rightcontrol".to_string(),
+        "keypad +" => "kpadd".to_string(),
+        "keypad -" => "kpsubtract".to_string(),
+        "keypad *" => "kpmultiply".to_string(),
+        "keypad /" => "kpdivide".to_string(),
+        "keypad ." => "kpdecimal".to_string(),
+        "keypad enter" => "kpenter".to_string(),
+        key => match key.strip_prefix("keypad ") {
+            Some(digit) => format!("kp{digit}"),
+            // "left shift", "page up", "caps lock"
+            None => key.replace(' ', ""),
+        },
+    };
+    match modifier {
+        Some(m) => format!("{m}+{key}"),
+        None => key,
+    }
+}
+
+/// Key name (as [`normalize_key`] makes it) to command line.
 #[derive(Debug, Default, Clone)]
 pub struct Bindings {
     keys: BTreeMap<String, String>,
@@ -42,6 +85,14 @@ pub struct Bindings {
 impl Bindings {
     pub fn get(&self, key: &str) -> Option<&str> {
         self.keys.get(&key.to_lowercase()).map(String::as_str)
+    }
+
+    pub fn insert(&mut self, key: &str, command: String) {
+        self.keys.insert(normalize_key(key), command);
+    }
+
+    pub fn remove(&mut self, key: &str) {
+        self.keys.remove(&normalize_key(key));
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
@@ -55,6 +106,12 @@ pub struct Console {
     pub bindings: Bindings,
     /// Directory `exec` resolves relative paths against.
     pub config_dir: PathBuf,
+    /// Config files to `exec` when the config directory doesn't have them (the game's
+    /// `configs/*.cfg`, like Soldat copies them to the user directory).
+    pub fallback_files: BTreeMap<String, String>,
+    /// The directories of the files being executed: a nested `exec` is relative to its
+    /// file (`exec graphics.cfg` in `configs/client.cfg`).
+    exec_dirs: Vec<String>,
     commands: BTreeMap<String, &'static str>,
     aliases: HashMap<String, String>,
     deferred: Vec<Deferred>,
@@ -82,6 +139,20 @@ impl Console {
     /// Lines printed since the last call.
     pub fn take_output(&mut self) -> Vec<String> {
         std::mem::take(&mut self.output)
+    }
+
+    /// Every command, alias and cvar name, sorted (for tab completion).
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = BUILTINS
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .chain(self.commands.keys().cloned())
+            .chain(self.aliases.keys().cloned())
+            .chain(self.cvars.iter().map(|c| c.name.clone()))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// Game commands invoked since the last call.
@@ -173,12 +244,10 @@ impl Console {
                 self.aliases.insert(alias.to_lowercase(), body.join(" "));
             }
             ("bind", [key, command @ ..]) if !command.is_empty() => {
-                self.bindings
-                    .keys
-                    .insert(key.to_lowercase(), command.join(" "));
+                self.bindings.insert(key, command.join(" "));
             }
             ("unbind", [key]) => {
-                self.bindings.keys.remove(&key.to_lowercase());
+                self.bindings.remove(key);
             }
             ("unbindall", []) => self.bindings.keys.clear(),
             ("reset", [cvar]) => self.cvars.reset(cvar)?,
@@ -207,13 +276,29 @@ impl Console {
                 self.cvars.set(cvar, &value)?;
             }
             ("exec", [file]) => {
-                let path = self.config_dir.join(file);
-                let script = std::fs::read_to_string(&path).map_err(|e| ConfigError::Exec {
-                    path: path.display().to_string(),
-                    reason: e.to_string(),
-                })?;
-                tracing::info!(path = %path.display(), "exec");
-                self.execute_script(&script)?;
+                let file = match self.exec_dirs.last() {
+                    Some(dir) if !dir.is_empty() => format!("{dir}/{file}"),
+                    _ => file.clone(),
+                };
+                let path = self.config_dir.join(&file);
+                let script = match std::fs::read_to_string(&path) {
+                    Ok(script) => script,
+                    Err(e) => match self.fallback_files.get(&file) {
+                        Some(script) => script.clone(),
+                        None => {
+                            return Err(ConfigError::Exec {
+                                path: path.display().to_string(),
+                                reason: e.to_string(),
+                            });
+                        }
+                    },
+                };
+                tracing::info!(file, "exec");
+                let dir = file.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+                self.exec_dirs.push(dir);
+                let result = self.execute_script(&script);
+                self.exec_dirs.pop();
+                result?;
             }
             ("cvarlist", args) => {
                 let prefix = args.first().map(String::as_str).unwrap_or("");
@@ -256,6 +341,55 @@ impl Console {
 mod tests {
     use super::*;
     use crate::config::Cvar;
+
+    #[test]
+    fn soldat_key_names_bind_the_same_keys() {
+        for (soldat, key) in [
+            ("A", "a"),
+            ("Tab", "tab"),
+            ("/", "slash"),
+            ("MOUSE3", "mouse3"),
+            ("ALT+F3", "alt+f3"),
+            ("CTRL+Q", "ctrl+q"),
+            ("Left Shift", "leftshift"),
+            ("Page Down", "pagedown"),
+            ("Keypad +", "kpadd"),
+            ("Keypad 7", "kp7"),
+            ("Return", "enter"),
+        ] {
+            assert_eq!(normalize_key(soldat), key, "{soldat}");
+        }
+    }
+
+    #[test]
+    fn nested_execs_are_relative_and_fall_back_to_the_game_files() {
+        let mut c = console();
+        c.config_dir = std::path::PathBuf::from("/nonexistent");
+        c.fallback_files.insert(
+            "configs/client.cfg".into(),
+            "unbindall\nexec controls.cfg".into(),
+        );
+        c.fallback_files.insert(
+            "configs/controls.cfg".into(),
+            r#""bind" "ALT+0" "say ""Stick around!""""#.into(),
+        );
+        c.execute("bind x +prone").unwrap();
+        c.execute("exec configs/client.cfg").unwrap();
+        assert_eq!(c.bindings.get("x"), None);
+        assert_eq!(c.bindings.get("alt+0"), Some("say Stick around!"));
+    }
+
+    #[test]
+    fn names_list_commands_aliases_and_cvars() {
+        let mut c = console();
+        c.register_command("kill", "kill: suicide");
+        c.execute("alias lowgrav sv_gravity 0.02").unwrap();
+        let names = c.names();
+        for name in ["bind", "kill", "lowgrav", "sv_gravity"] {
+            assert!(names.iter().any(|n| n == name), "{name}");
+        }
+        assert!(names.windows(2).all(|w| w[0] < w[1]));
+    }
 
     fn console() -> Console {
         let mut cvars = Cvars::new();

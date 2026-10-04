@@ -29,6 +29,9 @@ pub struct GameData {
     pub weapons: Arc<WeaponTable>,
     pub realistic_weapons: Arc<WeaponTable>,
     pub thing_skeletons: ThingSkeletons,
+    /// The weapons.ini and weapons_realistic.ini in use (`None`: the defaults), for clients
+    /// to play with the server's.
+    pub weapons_mods: [Option<String>; 2],
 }
 
 impl GameData {
@@ -46,13 +49,35 @@ impl GameData {
             0.9945,
         )?;
 
+        let (weapons, weapons_mod) = load_weapons(vfs, false);
+        let (realistic_weapons, realistic_mod) = load_weapons(vfs, true);
         Ok(GameData {
             anims,
             soldier_skeleton,
-            weapons: Arc::new(load_weapons(vfs, false)),
-            realistic_weapons: Arc::new(load_weapons(vfs, true)),
+            weapons: Arc::new(weapons),
+            realistic_weapons: Arc::new(realistic_weapons),
             thing_skeletons: ThingSkeletons::load(vfs)?,
+            weapons_mods: [weapons_mod, realistic_mod],
         })
+    }
+
+    /// The same data with another weapons mod (a server's: `ServerVars`).
+    pub fn with_weapons_mods(&self, mods: &[Option<String>; 2]) -> GameData {
+        let table = |realistic: bool| {
+            let text = mods[usize::from(realistic)].as_deref();
+            WeaponTable::new(realistic, text).unwrap_or_else(|error| {
+                tracing::warn!(%error, "using default weapons");
+                WeaponTable::new(realistic, None).unwrap()
+            })
+        };
+        GameData {
+            anims: self.anims.clone(),
+            soldier_skeleton: self.soldier_skeleton.clone(),
+            weapons: Arc::new(table(false)),
+            realistic_weapons: Arc::new(table(true)),
+            thing_skeletons: self.thing_skeletons.clone(),
+            weapons_mods: mods.clone(),
+        }
     }
 
     /// The weapon table for the given mode (`sv_realisticmode`).
@@ -67,7 +92,7 @@ impl GameData {
 
 /// `LoadWeapons`: the mod's weapons(_realistic).ini over the built-in stats; a missing or
 /// broken file means the defaults, like in Soldat.
-fn load_weapons(vfs: &Vfs, realistic: bool) -> WeaponTable {
+fn load_weapons(vfs: &Vfs, realistic: bool) -> (WeaponTable, Option<String>) {
     let file = if realistic {
         "configs/weapons_realistic.ini"
     } else {
@@ -75,14 +100,18 @@ fn load_weapons(vfs: &Vfs, realistic: bool) -> WeaponTable {
     };
 
     if !vfs.exists(file) {
-        return WeaponTable::new(realistic, None).unwrap();
+        return (WeaponTable::new(realistic, None).unwrap(), None);
     }
 
-    vfs.read_to_string(file)
+    let loaded = vfs
+        .read_to_string(file)
         .map_err(|e| e.to_string())
-        .and_then(|text| WeaponTable::new(realistic, Some(&text)))
-        .unwrap_or_else(|error| {
-            tracing::warn!(file, %error, "using default weapons");
-            WeaponTable::new(realistic, None).unwrap()
-        })
+        .and_then(|text| {
+            let table = WeaponTable::new(realistic, Some(&text))?;
+            Ok((table, Some(text)))
+        });
+    loaded.unwrap_or_else(|error| {
+        tracing::warn!(file, %error, "using default weapons");
+        (WeaponTable::new(realistic, None).unwrap(), None)
+    })
 }

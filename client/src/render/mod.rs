@@ -1,13 +1,24 @@
 use super::*;
 
 pub mod bullets;
+pub mod console;
+pub mod debug;
 pub mod game;
 pub mod gfx;
+pub mod hud;
+pub mod interface;
+pub mod layout;
 pub mod map;
+pub mod minimap;
+pub mod scoreboard;
 pub mod soldiers;
+pub mod sparks;
+pub mod text;
 pub mod things;
 
 pub use self::game::GameGraphics;
+pub use self::interface::InterfaceState;
+pub use self::text::{FontStyle, Fonts};
 
 use self::bullets::*;
 use self::map::*;
@@ -16,7 +27,7 @@ use self::things::*;
 use gfx2d::math::Mat2d;
 use gfx2d::*;
 
-const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "gif", "bmp"];
+pub(crate) const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "gif", "bmp"];
 
 /// Finds an image the way Soldat does (the file may be shipped with any image extension)
 /// and decodes it. Returns the resolved asset path (or the requested one if nothing was

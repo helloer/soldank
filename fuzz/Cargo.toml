@@ -1,0 +1,25 @@
+# Coverage-guided fuzzing of the network messages (nightly): `cargo +nightly fuzz run decode`.
+# The stable test `core/tests/decode_fuzz.rs` runs with the other tests.
+[package]
+name = "soldank-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+soldank-core = { path = "../core" }
+
+# a workspace of its own: out of the main build
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false

@@ -7,6 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+bitcode.workspace = true
 bitflags.workspace = true
 byteorder.workspace = true
 glam.workspace = true
@@ -18,3 +19,8 @@ zip.workspace = true
 [dev-dependencies]
 insta.workspace = true
 tempfile.workspace = true
+
+# the performance budget: `cargo bench -p soldank-core --bench tick`
+[[bench]]
+name = "tick"
+harness = false

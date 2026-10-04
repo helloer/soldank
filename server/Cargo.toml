@@ -1,0 +1,27 @@
+[package]
+name = "soldank-server"
+description = "Dedicated server for soldank"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+soldank-core.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+renet.workspace = true
+renet_netcode.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+zip.workspace = true
+
+# the performance budget: `cargo bench -p soldank-server --bench tick`
+[[bench]]
+name = "tick"
+harness = false

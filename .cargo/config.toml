@@ -1,0 +1,5 @@
+# The browser build: the JS functions of miniquad plugins that egui-miniquad uses (quad-url,
+# sapp-jsutils) are declared without an import module; they become imports the page's scripts
+# provide (web/build.sh copies those scripts next to miniquad's gl.js).
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--allow-undefined"]

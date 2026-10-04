@@ -87,6 +87,15 @@ impl ParticleSystem {
         Default::default()
     }
 
+    /// How many particles there are (numbered from 1).
+    pub fn len(&self) -> usize {
+        self.particles.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.particles.is_empty()
+    }
+
     pub fn active(&self, particle_num: usize) -> bool {
         self.particles[particle_num - 1].active
     }
@@ -126,6 +135,15 @@ impl ParticleSystem {
         for constraint in &mut self.constraints {
             constraint.active = true;
         }
+    }
+
+    pub fn force_mut(&mut self, particle_num: usize) -> &mut Vec2 {
+        &mut self.particles[particle_num - 1].force
+    }
+
+    /// Drops the last constraint (`Dec(ConstraintCount)`).
+    pub fn pop_constraint(&mut self) {
+        self.constraints.pop();
     }
 
     /// Sets timestep, gravity (multiplier * Grav) and verlet damping of every particle
@@ -218,9 +236,10 @@ impl ParticleSystem {
         };
 
         // StrToFloat returns Extended, so the scaling happens in extended precision
-        let number = |lines: &mut dyn Iterator<Item = &str>| -> Result<f64, DataError> {
+        let one_point_two = Ext::parse("1.2").unwrap();
+        let number = |lines: &mut dyn Iterator<Item = &str>| -> Result<Ext, DataError> {
             let line = lines.next();
-            line.and_then(|l| l.parse().ok())
+            line.and_then(Ext::parse)
                 .ok_or_else(|| error("a number", line))
         };
 
@@ -242,7 +261,10 @@ impl ParticleSystem {
             let x = number(&mut lines)?;
             let _y = number(&mut lines)?;
             let z = number(&mut lines)?;
-            let p = vec2(fpc(-x * ext(scale) / 1.2), fpc(-z * ext(scale)));
+            // -StrToFloat(X) * Scale / 1.2 and -StrToFloat(Z) * Scale
+            let scale = Ext::from_f32(scale);
+            let x = -x * scale / one_point_two;
+            let p = vec2(x.to_f32(), (-z * scale).to_f32());
 
             particles.push(Particle {
                 active: true,

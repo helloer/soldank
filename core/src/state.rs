@@ -8,6 +8,8 @@ pub enum Team {
     Bravo,
     Charlie,
     Delta,
+    /// `TEAM_SPECTATOR`: a player without a body, always dead, far off the map.
+    Spectator,
 }
 
 #[derive(Debug, Copy, Clone)]

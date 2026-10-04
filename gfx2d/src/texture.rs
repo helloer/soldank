@@ -51,6 +51,10 @@ impl Texture {
         create_texture(&mut *g.ctx, dimensions, data, filter, wrap)
     }
 
+    pub(crate) fn from_id(id: TextureId, dimensions: (u16, u16)) -> Texture {
+        Texture { id, dimensions }
+    }
+
     pub fn dimensions(&self) -> (u16, u16) {
         self.dimensions
     }
@@ -104,6 +108,20 @@ pub(crate) fn create_texture(
 /// Decodes an image file (png, bmp, jpg, gif, ...) from memory.
 pub fn decode_image_rgba(data: &[u8]) -> image::ImageResult<image::RgbaImage> {
     Ok(image::load_from_memory(data)?.into_rgba8())
+}
+
+/// A GIF's frames, each with how long it shows (milliseconds).
+pub fn decode_gif_frames(data: &[u8]) -> image::ImageResult<Vec<(image::RgbaImage, u32)>> {
+    use image::AnimationDecoder;
+    let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(data))?;
+    decoder
+        .into_frames()
+        .map(|frame| {
+            let frame = frame?;
+            let (numer, denom) = frame.delay().numer_denom_ms();
+            Ok((frame.into_buffer(), numer.checked_div(denom).unwrap_or(0)))
+        })
+        .collect()
 }
 
 pub fn premultiply_image(img: &mut image::RgbaImage) {

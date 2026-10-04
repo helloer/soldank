@@ -4,3 +4,7 @@
 **/*.rs.bk
 assets
 assets/*
+
+# kept out of the repository for now
+/PLAN.md
+/core/tests/golden/

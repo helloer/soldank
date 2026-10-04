@@ -63,10 +63,12 @@ enum Layer {
     },
     Zip {
         path: PathBuf,
-        archive: Mutex<ZipArchive<BufReader<File>>>,
+        archive: Mutex<ZipArchive<Box<dyn ReadSeek>>>,
         // normalized path -> entry index
         index: HashMap<String, usize>,
     },
+    /// Files added while running (downloads).
+    Memory { files: HashMap<String, Vec<u8>> },
 }
 
 impl Layer {
@@ -74,18 +76,34 @@ impl Layer {
         match self {
             Layer::Dir { index, .. } => index.contains_key(key),
             Layer::Zip { index, .. } => index.contains_key(key),
+            Layer::Memory { files } => files.contains_key(key),
         }
+    }
+
+    /// A file's name as stored (its case), by key.
+    fn original(&self, key: &str) -> Option<String> {
+        let name = match self {
+            Layer::Dir { index, .. } => index.get(key)?.to_string_lossy().into_owned(),
+            Layer::Zip { archive, index, .. } => {
+                let archive = archive.lock().unwrap_or_else(|e| e.into_inner());
+                archive.name_for_index(*index.get(key)?)?.to_string()
+            }
+            Layer::Memory { files } => files.get_key_value(key)?.0.clone(),
+        };
+        Some(name.replace('\\', "/"))
     }
 
     fn keys(&self) -> Box<dyn Iterator<Item = &String> + '_> {
         match self {
             Layer::Dir { index, .. } => Box::new(index.keys()),
             Layer::Zip { index, .. } => Box::new(index.keys()),
+            Layer::Memory { files } => Box::new(files.keys()),
         }
     }
 
     fn read(&self, key: &str) -> Option<Result<Vec<u8>>> {
         match self {
+            Layer::Memory { files } => files.get(key).cloned().map(Ok),
             Layer::Dir { root, index } => {
                 let path = root.join(index.get(key)?);
                 Some(std::fs::read(&path).map_err(|source| VfsError::Io { path, source }))
@@ -120,6 +138,22 @@ impl Layer {
     }
 }
 
+/// The game's own files where they're usually kept: `assets/` or `soldat.smod` in the current
+/// directory, else next to the program (a release keeps them there).
+pub fn find_game_files() -> Option<PathBuf> {
+    let here = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let dirs = std::iter::once(PathBuf::from(".")).chain(here);
+    dirs.flat_map(|dir| ["assets", "soldat.smod"].map(|name| dir.join(name)))
+        .find(|path| path.exists())
+}
+
+/// What a zip archive is read from: a file, or bytes in memory.
+trait ReadSeek: Read + std::io::Seek + Send {}
+
+impl<T: Read + std::io::Seek + Send> ReadSeek for T {}
+
 /// A stack of mounted asset sources.
 #[derive(Default)]
 pub struct Vfs {
@@ -150,8 +184,33 @@ impl Vfs {
         Ok(())
     }
 
+    /// Mounts a `.smod`/`.zip` archive held in memory (fetched in the browser; shared bytes
+    /// mount again without a copy), `name` for errors.
+    pub fn mount_archive(
+        &mut self,
+        name: &str,
+        bytes: impl AsRef<[u8]> + Send + 'static,
+    ) -> Result<()> {
+        let layer = zip_layer(Path::new(name), Box::new(std::io::Cursor::new(bytes)))?;
+        tracing::info!(name, files = layer.keys().count(), "mounted assets");
+        self.layers.push(layer);
+        Ok(())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.layers.is_empty()
+    }
+
+    /// Adds a file over everything mounted so far (a download, say).
+    pub fn add(&mut self, path: &str, bytes: Vec<u8>) {
+        if !matches!(self.layers.last(), Some(Layer::Memory { .. })) {
+            self.layers.push(Layer::Memory {
+                files: HashMap::new(),
+            });
+        }
+        if let Some(Layer::Memory { files }) = self.layers.last_mut() {
+            files.insert(normalize(path), bytes);
+        }
     }
 
     pub fn exists(&self, path: &str) -> bool {
@@ -214,6 +273,62 @@ impl Vfs {
         files.dedup();
         files
     }
+
+    /// The directories in a directory, with their names as stored.
+    pub fn list_dirs(&self, dir: &str) -> Vec<String> {
+        let mut prefix = normalize(dir);
+        if !prefix.is_empty() && !prefix.ends_with('/') {
+            prefix.push('/');
+        }
+        let mut dirs: Vec<String> = Vec::new();
+        for layer in self.layers.iter().rev() {
+            for key in layer.keys() {
+                let Some((name, _)) = key.strip_prefix(&prefix).and_then(|r| r.split_once('/'))
+                else {
+                    continue;
+                };
+                if dirs.iter().any(|d| d.eq_ignore_ascii_case(name)) {
+                    continue;
+                }
+                // the stored case, from the file's own name
+                let stored = layer
+                    .original(key)
+                    .and_then(|path| {
+                        let rest = &path[prefix.len().min(path.len())..];
+                        rest.split('/').next().map(str::to_string)
+                    })
+                    .filter(|stored| stored.eq_ignore_ascii_case(name))
+                    .unwrap_or_else(|| name.to_string());
+                dirs.push(stored);
+            }
+        }
+        dirs.sort_by_key(|d| d.to_ascii_lowercase());
+        dirs
+    }
+
+    /// The files of a directory with their names as stored (the case they were made with; the
+    /// top layer's when several have one).
+    pub fn list_names(&self, dir: &str) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .list(dir)
+            .into_iter()
+            .map(|file| {
+                let key = if dir.is_empty() {
+                    file.clone()
+                } else {
+                    format!("{}/{file}", normalize(dir).trim_end_matches('/'))
+                };
+                self.layers
+                    .iter()
+                    .rev()
+                    .find_map(|layer| layer.original(&key))
+                    .and_then(|name| name.rsplit('/').next().map(str::to_string))
+                    .unwrap_or(file)
+            })
+            .collect();
+        names.sort_by_key(|n| n.to_ascii_lowercase());
+        names
+    }
 }
 
 fn mount_dir(root: &Path) -> Result<Layer> {
@@ -262,7 +377,11 @@ fn mount_zip(path: &Path) -> Result<Layer> {
         source,
     })?;
 
-    let archive = ZipArchive::new(BufReader::new(file)).map_err(|source| VfsError::Zip {
+    zip_layer(path, Box::new(BufReader::new(file)))
+}
+
+fn zip_layer(path: &Path, reader: Box<dyn ReadSeek>) -> Result<Layer> {
+    let archive = ZipArchive::new(reader).map_err(|source| VfsError::Zip {
         path: path.to_owned(),
         source,
     })?;
@@ -299,6 +418,18 @@ mod tests {
             zip.write_all(content.as_bytes()).unwrap();
         }
         zip.finish().unwrap();
+    }
+
+    #[test]
+    fn added_files_cover_mounted_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "maps/a.pms", "old");
+        let mut vfs = Vfs::new();
+        vfs.mount(dir.path()).unwrap();
+        vfs.add("Maps/A.pms", b"new".to_vec());
+        vfs.add("maps/b.pms", b"b".to_vec());
+        assert_eq!(vfs.read("maps/a.pms").unwrap(), b"new");
+        assert_eq!(vfs.list("maps"), ["a.pms", "b.pms"]);
     }
 
     #[test]
@@ -340,6 +471,48 @@ mod tests {
         assert_eq!(vfs.read_to_string("anims/stand.poa").unwrap(), "stand");
         assert_eq!(vfs.read_to_string("maps/TEST.pms").unwrap(), "map");
         assert_eq!(vfs.list("maps"), vec!["test.pms"]);
+        assert_eq!(vfs.list_names("maps"), vec!["test.pms"]);
+        assert_eq!(vfs.list_names("anims"), vec!["stand.poa"]);
+    }
+
+    #[test]
+    fn directories_are_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "custom-interfaces/Storm/setup.sif", "");
+        write(dir.path(), "custom-interfaces/tech/setup.sif", "");
+        write(dir.path(), "custom-interfaces/readme.txt", "");
+        let mut vfs = Vfs::new();
+        vfs.mount(dir.path()).unwrap();
+        assert_eq!(vfs.list_dirs("custom-interfaces"), ["Storm", "tech"]);
+    }
+
+    #[test]
+    fn names_keep_their_case() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Maps/ctf_Ash.pms", "map");
+        let zip = dir.path().join("mod.smod");
+        write_zip(&zip, &[("maps/inf_Abel.pms", "map")]);
+        let mut vfs = Vfs::new();
+        vfs.mount(dir.path()).unwrap();
+        vfs.mount(&zip).unwrap();
+        assert_eq!(vfs.list("maps"), ["ctf_ash.pms", "inf_abel.pms"]);
+        assert_eq!(vfs.list_names("maps"), ["ctf_Ash.pms", "inf_Abel.pms"]);
+    }
+
+    #[test]
+    fn archives_mount_from_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("soldat.smod");
+        write_zip(&file, &[("Maps/test.pms", "map"), ("mod.ini", "ini")]);
+        let mut vfs = Vfs::new();
+        vfs.mount_archive("soldat.smod", std::fs::read(&file).unwrap())
+            .unwrap();
+        assert_eq!(vfs.read_to_string("maps/test.pms").unwrap(), "map");
+        assert_eq!(vfs.list("maps"), vec!["test.pms"]);
+        assert!(
+            vfs.mount_archive("bad.smod", b"not a zip".to_vec())
+                .is_err()
+        );
     }
 
     #[test]

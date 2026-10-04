@@ -15,6 +15,8 @@ bitflags! {
         const THROW = 1 << 7;
         const DROP = 1 << 8;
         const PRONE = 1 << 9;
+        const FLAG_THROW = 1 << 10;
+        const RELOAD = 1 << 11;
     }
 }
 
@@ -32,6 +34,8 @@ impl Buttons {
             "throw" => Buttons::THROW,
             "drop" => Buttons::DROP,
             "prone" => Buttons::PRONE,
+            "flagthrow" => Buttons::FLAG_THROW,
+            "reload" => Buttons::RELOAD,
             _ => return None,
         })
     }
@@ -61,7 +65,9 @@ impl Soldier {
         c.throw_nade = b.contains(Buttons::THROW);
         c.throw_weapon = b.contains(Buttons::DROP);
         c.prone = b.contains(Buttons::PRONE);
-        c.mouse_aim_x = input.aim.x.round() as i32;
-        c.mouse_aim_y = input.aim.y.round() as i32;
+        c.flag_throw = b.contains(Buttons::FLAG_THROW);
+        c.reload = b.contains(Buttons::RELOAD);
+        c.mouse_aim_x = input.aim.x.round_ties_even() as i32;
+        c.mouse_aim_y = input.aim.y.round_ties_even() as i32;
     }
 }

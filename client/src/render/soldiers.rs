@@ -44,7 +44,7 @@ pub struct SoldierPartInfo {
     pub center: (f32, f32),
     pub flexibility: f32,
     pub flip: bool,
-    #[allow(dead_code)] // TODO: team-specific gostek parts
+    /// Bravo and Delta soldiers use the `team2` version of the image.
     pub team: bool,
     pub color: SoldierColor,
     pub alpha: SoldierAlpha,
@@ -116,18 +116,31 @@ pub fn render_soldier(
     let has_blood = alpha[SoldierAlpha::Blood as usize] > 0;
     let visible = parts_visibility(&soldier_graphics.base_visibility, soldier, has_blood);
 
-    // TODO: team2 offset, dredlock rotation matrix
+    let team2_offset = match soldier.team {
+        Team::Bravo | Team::Delta => gfx::Soldier::Team2Stopa.id() - gfx::Soldier::Stopa.id(),
+        _ => 0,
+    };
+    let pos = |p: usize| lerp(sk.old_pos(p), sk.pos(p), frame_percent);
+
+    // dreadlocks hang from the head, rotated with it
+    let head = soldier_graphics.parts[SoldierPart::Head.id()].point;
+    let head_rot = vec2angle(pos(head.1) - pos(head.0)) - std::f32::consts::FRAC_PI_2;
+    let dreadlocks = SoldierPart::HairDreadlock1.id()..=SoldierPart::HairDreadlock5.id();
 
     for (i, part) in soldier_graphics.parts.iter().enumerate() {
         if visible[i] && !part.sprite.is_none() {
             let mut sprite_index: usize = 0;
-            let cx = part.center.0;
+            let mut cx = part.center.0;
             let mut cy = part.center.1;
             let mut scale = vec2(1.0, 1.0);
             let (p0, p1) = part.point;
-            let p0 = lerp(sk.old_pos(p0), sk.pos(p0), frame_percent);
-            let p1 = lerp(sk.old_pos(p1), sk.pos(p1), frame_percent);
+            let mut p0 = pos(p0);
+            let p1 = pos(p1);
             let rot = vec2angle(p1 - p0);
+
+            if part.team {
+                sprite_index += team2_offset;
+            }
 
             if soldier.direction != 1 {
                 if part.flip {
@@ -137,15 +150,6 @@ pub fn render_soldier(
                     scale.y = -1.0;
                 }
             }
-
-            if part.flexibility > 0.0 {
-                scale.x = f32::min(1.5, (p1 - p0).length() / part.flexibility);
-            }
-
-            let color = {
-                let color = colors[part.color as usize];
-                rgba(color.r(), color.g(), color.b(), alpha[part.alpha as usize])
-            };
 
             let sprite = match part.sprite {
                 SoldierSprite::Soldier(part_sprite) => {
@@ -159,6 +163,29 @@ pub fn render_soldier(
                     &sprites[group.id()][sprite.id()]
                 }
                 SoldierSprite::None => unreachable!(),
+            };
+
+            if dreadlocks.contains(&i) {
+                let offset = vec2(
+                    -cy * sprite.height * f32::from(soldier.direction),
+                    cx * sprite.width,
+                );
+                let (sin, cos) = head_rot.sin_cos();
+                p0 += vec2(
+                    offset.x * cos - offset.y * sin,
+                    offset.x * sin + offset.y * cos,
+                );
+                cx = 0.0;
+                cy = 0.5;
+                let n = (i - SoldierPart::HairDreadlock1.id()) as f32;
+                scale.x = 0.75 + (1.0 - 0.75) / 5.0 * n;
+            } else if part.flexibility > 0.0 {
+                scale.x = f32::min(1.5, (p1 - p0).length() / part.flexibility);
+            }
+
+            let color = {
+                let color = colors[part.color as usize];
+                rgba(color.r(), color.g(), color.b(), alpha[part.alpha as usize])
             };
 
             batch.add_sprite(
@@ -180,10 +207,11 @@ fn colors_and_alpha(soldier: &Soldier, realistic_mode: bool) -> ([Color; 7], [u8
     let mut alpha_blood = (200.0 - soldier.health.round()).clamp(0.0, 255.0) as u8;
     let mut color_cygar = rgb(255, 255, 255);
     let color_none = rgb(255, 255, 255);
-    let color_main = rgb(0, 0, 0); // TODO: Player.Color1
-    let color_pants = rgb(0, 0, 0); // TODO: Player.Color2
-    let color_skin = rgb(230, 180, 120); // TODO: Player.SkinColor
-    let color_hair = rgb(0, 0, 0); // TODO: Player.HairColor
+    let hex = |c: u32| rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+    let color_main = hex(soldier.looks.shirt);
+    let color_pants = hex(soldier.looks.pants);
+    let color_skin = hex(soldier.looks.skin);
+    let color_hair = hex(soldier.looks.hair);
     let color_headblood = rgb(172, 169, 168);
 
     if soldier.has_cigar == 5 {
@@ -201,7 +229,7 @@ fn colors_and_alpha(soldier: &Soldier, realistic_mode: bool) -> ([Color; 7], [u8
         alpha_blood = 0;
     }
 
-    let alpha_nades: u8 = (0.75 * f32::from(alpha_base)).round() as u8;
+    let alpha_nades: u8 = (0.75 * f32::from(alpha_base)) as u8;
 
     (
         [
@@ -263,9 +291,7 @@ fn parts_visibility(base_visibility: &BitSet, soldier: &Soldier, blood: bool) ->
         visible[index + i as usize] = true;
     }
 
-    let chain = 0; // TODO: Player.Chain (this seems broken, check skeleton)
-
-    match chain {
+    match soldier.looks.chain {
         1 => {
             visible[SoldierPart::SilverLchain.id()] = true;
             visible[SoldierPart::SilverRchain.id()] = true;
@@ -301,18 +327,16 @@ fn parts_visibility(base_visibility: &BitSet, soldier: &Soldier, blood: bool) ->
         };
 
         if soldier.wear_helmet == 1 {
-            let head_cap = gfx::Soldier::Helm; // TODO: Player.HeadCap
-
-            match head_cap {
-                gfx::Soldier::Helm if grabbed => visible[SoldierPart::GrabbedHelmet.id()] = true,
-                gfx::Soldier::Kap if grabbed => visible[SoldierPart::GrabbedHat.id()] = true,
-                gfx::Soldier::Helm if !grabbed => visible[SoldierPart::Helmet.id()] = true,
-                gfx::Soldier::Kap if !grabbed => visible[SoldierPart::Hat.id()] = true,
+            match (soldier.head_cap, grabbed) {
+                (1, true) => visible[SoldierPart::GrabbedHelmet.id()] = true,
+                (1, false) => visible[SoldierPart::Helmet.id()] = true,
+                (2, true) => visible[SoldierPart::GrabbedHat.id()] = true,
+                (2, false) => visible[SoldierPart::Hat.id()] = true,
                 _ => {}
             }
         }
 
-        let hair_style = 3; // TODO: Player.HairStyle
+        let hair_style = soldier.looks.hair_style;
 
         if grabbed || soldier.wear_helmet != 1 || hair_style == 3 {
             match hair_style {
@@ -444,5 +468,30 @@ pub fn render_skeleton(soldier: &Soldier, batch: &mut DrawBatch, px: f32, frame_
                 vertex(m * vec2(-px, 1.0 * px), Vec2::ZERO, rgb(0, 0, 255)),
             ],
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn team_parts_have_team2_images() {
+        let offset = gfx::Soldier::Team2Stopa.id() - gfx::Soldier::Stopa.id();
+        for part in SoldierPart::data().iter().filter(|p| p.team) {
+            let SoldierSprite::Soldier(sprite) = part.sprite else {
+                continue;
+            };
+            for flip in 0..=usize::from(part.flip) {
+                let base = (sprite + flip).filename();
+                let team2 = (sprite + flip + offset).filename();
+                assert_eq!(
+                    team2,
+                    base.replacen("gostek-gfx/", "gostek-gfx/team2/", 1),
+                    "{}",
+                    part.name
+                );
+            }
+        }
     }
 }
