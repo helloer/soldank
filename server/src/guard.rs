@@ -292,8 +292,9 @@ impl ServerGame {
             let Some(soldier) = soldier.filter(|s| s.active) else {
                 continue;
             };
+            // (measured: some ticks of pongs, `PingTime > 0`)
             let ping = i64::from(soldier.ping);
-            if ping > max || (ping < min && ping > 0) {
+            if ping > max || (ping < min && soldier.ping_ticks > 0) {
                 tracing::info!("{} gets a ping warning", soldier.name);
                 client.warnings.ping += 1;
                 if i64::from(client.warnings.ping) > most {

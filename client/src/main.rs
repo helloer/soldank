@@ -1,7 +1,3 @@
-macro_rules! iif(
-    ($cond:expr, $then:expr, $else:expr) => (if $cond { $then } else { $else })
-);
-
 mod app;
 mod audio;
 mod camera;
@@ -17,7 +13,6 @@ mod front;
 mod game;
 mod input;
 mod menus;
-#[cfg_attr(target_arch = "wasm32", path = "web/net.rs")]
 mod net;
 mod online;
 #[cfg(feature = "dev")]
@@ -176,6 +171,10 @@ struct Game {
     assets: Assets,
     /// The escape menu asked for the front end's menus, or for the settings over the game.
     pub to_menu: bool,
+    /// The console asked for a server (`connect`, `joinurl`; `None` inside: `retry` the
+    /// last one).
+    pub join: Option<Option<app::Session>>,
+    action_snap: view::ActionSnap,
     pub wants_settings: bool,
     /// The game data as loaded (the server's or the demo's weapons mods change it).
     base_data: Arc<GameData>,

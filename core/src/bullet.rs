@@ -124,6 +124,15 @@ pub struct Bullet {
     pub hit_multiply_prev: f32,
     pub degrade_count: u8,
     pub ricochet_count: i32,
+    /// The tick it was made (`StartUpTime`).
+    pub start_tick: u64,
+    /// `OwnerPingTick`: a client's of another player's shot, how many ticks late it is (the
+    /// owner's ping and `PingTicksAdd`); 0 otherwise.
+    pub owner_ping_tick: u8,
+    /// `PingAdd`, `PingAddStart`: the ticks a client moved another player's shot on when it
+    /// came (both pings), counting down by 4 a tick: its trail shows the way it came.
+    pub ping_add: i16,
+    pub ping_add_start: i16,
     pub hit_spot: Vec2,
     pub seed: u16,
     pub sprite: Option<sprites::Weapon>,
@@ -158,6 +167,8 @@ pub enum BulletOutcome {
         kill: Kill,
         /// Weapon of the killing bullet.
         weapon: WeaponKind,
+        /// The shot, for the killer's screen (not a flame's).
+        shot: Option<Shot>,
     },
 }
 
@@ -167,6 +178,8 @@ pub struct BulletCtx<'a> {
     pub config: &'a WorldConfig,
     pub things: &'a mut [Thing],
     pub tick: u64,
+    /// The bullet's slot.
+    pub slot: usize,
     pub soldiers: &'a mut SlotMap<SoldierId, Soldier>,
     pub bullets: &'a mut [Bullet],
     pub rng: &'a mut PascalRandom,
@@ -176,6 +189,44 @@ pub struct BulletCtx<'a> {
 }
 
 impl Bullet {
+    /// `GetSpriteCollisionPoint`: where a soldier is for this bullet. A client takes another
+    /// player's shot at where a player was when it was fired, the shot's ping ago
+    /// (`OldSpritePos`); a flame's first ticks and bots go by where they are now, and so does
+    /// the server (and a game alone).
+    fn collision_point(&self, soldier: &Soldier, client: bool) -> Vec2 {
+        let fresh_flame =
+            self.style == BulletStyle::Flame && self.timeout > FLAMER_TIMEOUT as i16 - 2;
+        if !client || fresh_flame || soldier.is_bot() {
+            return soldier.particle.pos;
+        }
+        soldier.old_positions[usize::from(self.owner_ping_tick).min(MAX_OLDPOS - 1)]
+    }
+
+    /// The tick of `victim`'s update a hit's knock-back comes in: a client's half the
+    /// victim's ping and the shot's later (as the server's would), the server's next.
+    fn push_tick(&self, victim: &Soldier, client: bool) -> usize {
+        if !client {
+            return 0;
+        }
+        let ticks = usize::from(victim.ping_ticks) / 2 + usize::from(self.owner_ping_tick) + 1;
+        ticks.min(MAX_PUSHTICK)
+    }
+
+    /// The shot if this bullet kills with a hit on skeleton point `hit` (`TSprite.Die` on
+    /// the server): how far it flew from where it was made, how long, its ricochets. Not for
+    /// flames, nor for the first slot's bullet hitting point 1 (Soldat's `What = 1` and
+    /// `Where = 1`).
+    fn shot(&self, ctx: &BulletCtx, hit: usize) -> Option<Shot> {
+        if (ctx.slot == 0 && hit == 1) || self.style == BulletStyle::Flame {
+            return None;
+        }
+        Some(Shot {
+            distance: (self.particle.pos - self.initial_pos).length() / 14.0,
+            life: ctx.tick.saturating_sub(self.start_tick) as f32 / 60.0,
+            ricochets: self.ricochet_count.clamp(0, 255) as u8,
+        })
+    }
+
     /// `CreateBullet` + `BulletParts.CreatePart`.
     pub fn new(params: &BulletParams, owner: SoldierId, seed: u16, gravity: f32) -> Bullet {
         let mut position = params.position;
@@ -212,6 +263,10 @@ impl Bullet {
             hit_multiply_prev: params.hit_multiply,
             degrade_count: 0,
             ricochet_count: 0,
+            start_tick: 0,
+            owner_ping_tick: 0,
+            ping_add: 0,
+            ping_add_start: 0,
             hit_spot: Vec2::ZERO,
             seed,
             sprite: params.sprite,
@@ -759,9 +814,10 @@ impl Bullet {
 
         // FilterSpritesByDistance: insertion sort by squared distance, stable on ties
         let mut targets: Vec<(f32, SoldierId)> = Vec::new();
+        let client = ctx.config.client;
         for (id, soldier) in ctx.soldiers.iter() {
             if self.targetable(id, soldier) {
-                let d = self.particle.pos - soldier.particle.pos;
+                let d = self.particle.pos - self.collision_point(soldier, client);
                 let rough = d.x * d.x + d.y * d.y;
                 let at = targets
                     .iter()
@@ -779,7 +835,7 @@ impl Bullet {
 
         for &(_, id) in &targets {
             let target = &ctx.soldiers[id];
-            let col = target.particle.pos;
+            let col = self.collision_point(target, client);
 
             let (start, end) = match (melee, owner_hands) {
                 (true, Some(hands)) => (hands, self.particle.pos + bullet_velocity),
@@ -852,7 +908,8 @@ impl Bullet {
                     BulletStyle::FragGrenade | BulletStyle::Flame | BulletStyle::Arrow
                 )
             {
-                ctx.soldiers[id].next_push += bullet_velocity * weapon.push;
+                let tick = self.push_tick(&ctx.soldiers[id], client);
+                ctx.soldiers[id].next_push[tick] += bullet_velocity * weapon.push;
             }
 
             let modifier = if where_ <= 4 {
@@ -864,6 +921,7 @@ impl Bullet {
             };
 
             let (owner, bullet_weapon) = (self.owner, self.weapon);
+            let shot = self.shot(ctx, where_);
             let damage = |ctx: &mut BulletCtx, amount: f32| {
                 let config = ctx.config;
                 let hurt = health_hit(
@@ -877,7 +935,7 @@ impl Bullet {
                     Some(bullet_weapon),
                     ctx.rng,
                 );
-                outcomes_of_hurt(ctx, hurt, id, owner, bullet_weapon);
+                outcomes_of_hurt(ctx, hurt, id, owner, bullet_weapon, shot);
             };
 
             // the slap of a hit, before it hurts (client sounds)
@@ -920,12 +978,18 @@ impl Bullet {
 
                     let speed = bullet_velocity.length();
                     damage(ctx, speed * self.hit_multiply * modifier);
-                    // HitSpray (deathmatch: every hit counts)
-                    ctx.soldiers[id].hit_spray();
+                    // an enemy's hit, or a soloist's (`IsSolo`, `IsNotInSameTeam`)
+                    let solo =
+                        ctx.config.game_mode == GameMode::Deathmatch || victim_team == Team::None;
+                    let enemy = solo || owner_team != victim_team;
+                    // HitSpray (`CanHitSpray`): its own, an enemy's, any with friendly fire
+                    if id == self.owner || ctx.config.friendly_fire || enemy {
+                        ctx.soldiers[id].hit_spray();
+                    }
 
-                    // drop weapon when punched (deathmatch: everyone is solo)
-                    // TODO: team modes only for enemies
+                    // drop weapon when punched
                     if self.style == BulletStyle::Fist
+                        && enemy
                         && !ctx.soldiers[id]
                             .primary_weapon()
                             .is_any(&[WeaponKind::Bow, WeaponKind::FlameBow])
@@ -1335,6 +1399,7 @@ impl Bullet {
 
         let config = ctx.config;
         let bullet_weapon = self.weapon;
+        let shot = self.shot(ctx, 1);
         let damage = |ctx: &mut BulletCtx, id: SoldierId, amount: f32, impact: Vec2| {
             let weapon = Some(bullet_weapon);
             let hurt = health_hit(
@@ -1348,7 +1413,7 @@ impl Bullet {
                 weapon,
                 ctx.rng,
             );
-            outcomes_of_hurt(ctx, hurt, id, owner, bullet_weapon);
+            outcomes_of_hurt(ctx, hurt, id, owner, bullet_weapon, shot);
         };
 
         let flags = ctx.config.weapons.get(self.weapon).no_collision;
@@ -1364,8 +1429,7 @@ impl Bullet {
             }
 
             if !soldier.dead_meat {
-                // GetSpriteCollisionPoint is the soldier's position on the server
-                let col = soldier.particle.pos;
+                let col = self.collision_point(soldier, config.client);
                 let part_pos =
                     |part: usize| col + (soldier.skeleton.pos(part) - soldier.particle.pos);
 
@@ -1415,7 +1479,8 @@ impl Bullet {
                         modifier *= 0.5;
                     }
 
-                    soldier.next_push -= a;
+                    let tick = self.push_tick(soldier, config.client);
+                    soldier.next_push[tick] -= a;
 
                     if soldier.ceasefire_counter < 0 {
                         let amount = (1.0 / (s + 1.0)) * gun.hit_multiply * modifier;
@@ -1568,6 +1633,7 @@ fn outcomes_of_hurt(
     id: SoldierId,
     owner: SoldierId,
     weapon: WeaponKind,
+    shot: Option<Shot>,
 ) {
     let Some(hurt) = hurt else { return };
     if hurt.was_alive && id != owner {
@@ -1579,6 +1645,7 @@ fn outcomes_of_hurt(
             killer: owner,
             kill,
             weapon,
+            shot,
         });
     }
 }

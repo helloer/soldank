@@ -70,8 +70,13 @@ fn soldier(num: PlayerNum) -> SoldierState {
         bonus: 0,
         bonus_time: 0,
         ping: 80,
+        ping_ticks: 5,
         stat: None,
         weapon_sel: 0x3fff,
+        position: 1,
+        look: 0,
+        respawn_counter: 0,
+        quality: 100,
     }
 }
 
@@ -80,9 +85,12 @@ fn thing(slot: u8) -> ThingState {
         slot,
         kind: 1,
         points: vec![[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]],
+        old_points: vec![[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]],
         holder: Some(2),
         in_base: true,
         ammo: 0,
+        static_type: false,
+        flip: false,
     }
 }
 
@@ -91,6 +99,8 @@ fn snapshot(tick: u64) -> Snapshot {
         tick,
         soldiers: (1..=4).map(soldier).collect(),
         things: (0..3).map(thing).collect(),
+        thing_snapshot: true,
+        dead_snapshot: true,
         team_scores: [0, 3, 1, 0, 0, 0],
         time_left: 36000,
     }
@@ -106,6 +116,7 @@ fn seeds() -> Vec<Vec<u8>> {
         velocity: [0.1, -0.2],
         snapshot: 40,
         resets: 1,
+        position: 3,
     };
     let bullet = BulletState {
         weapon: 3,
@@ -142,6 +153,12 @@ fn seeds() -> Vec<Vec<u8>> {
         ClientMessage::Chat {
             text: "hello there".into(),
             team: true,
+            radio: None,
+        },
+        ClientMessage::Chat {
+            text: "Enemy flagger up".into(),
+            team: true,
+            radio: Some(11),
         },
         ClientMessage::Command("kick 3".into()),
         ClientMessage::Bullet(bullet.clone()),
@@ -202,6 +219,35 @@ fn seeds() -> Vec<Vec<u8>> {
         },
         ServerMessage::MapList(vec!["ctf_Ash".into(), "ctf_Run".into()]),
         ServerMessage::ServerText("Welcome".into()),
+        ServerMessage::Killed {
+            victim: 2,
+            killer: 1,
+            how: 1,
+            weapon: Some(7),
+            headshot: true,
+            death: DeathState {
+                hit: 12,
+                skeleton: (0..16)
+                    .map(|i| ([i as f32, 2.0], [i as f32, 1.5]))
+                    .collect(),
+                torn: 0b00100,
+                on_fire: 0,
+                respawn_counter: 180,
+                shot: soldank_core::Shot {
+                    distance: 42.5,
+                    life: 0.75,
+                    ricochets: 1,
+                },
+            },
+        },
+        ServerMessage::Chat {
+            from: 1,
+            text: "Enemy flagger up".into(),
+            team: true,
+            radio: Some(11),
+        },
+        ServerMessage::Cvars(vec![("sv_gravity".into(), "0.1".into())]),
+        ServerMessage::Weapons([Some("[AK-74]\nDamage=1.2".into()), None]),
     ];
     let mut seeds: Vec<Vec<u8>> = clients.iter().map(encode).collect();
     seeds.extend(servers.iter().map(encode));

@@ -20,11 +20,12 @@
 <!-- the right button is the jets: no context menu -->
 <canvas id="glcanvas" tabindex="1" oncontextmenu="return false;"></canvas>
 <!-- miniquad's loader (its js/gl.js) and the plugins egui-miniquad uses, copied here by
-     build.sh, and the game's sound -->
+     build.sh, and the game's sound and network -->
 <script src="gl.js"></script>
 <script src="sapp_jsutils.js"></script>
 <script src="quad-url.js"></script>
 <script src="sound.js"></script>
+<script src="webtransport.js"></script>
 <script>
   document.addEventListener("contextmenu", (event) => event.preventDefault());
   load("soldank.wasm");

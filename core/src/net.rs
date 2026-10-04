@@ -10,7 +10,7 @@ use bitcode::{Decode, Encode};
 use std::collections::{HashMap, VecDeque};
 
 /// Bumped when the messages change; the server turns away other versions.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// The netcode protocol id (`u64` in renet's connect handshake).
 pub const PROTOCOL_ID: u64 = 0x50_4c_44_4b_00_00_00_01;
@@ -85,6 +85,9 @@ pub struct ControlState {
     /// The server's resets of the player's position the client has had (its respawns and
     /// [`ServerMessage::ForcePosition`]s, counting on): till then `pos` is from before.
     pub resets: u8,
+    /// Standing, crouching or prone (`Position`): the server's soldier goes prone or gets up
+    /// when its own differs.
+    pub position: u8,
 }
 
 impl ControlState {
@@ -111,24 +114,21 @@ pub enum ClientMessage {
     /// The map is loaded: put me in the match (after the welcome and each map change). With
     /// the [`GameMod::hash`] of the mod the client plays with: 0 none, 1 mods of its own
     /// (`CustomModChecksum`, for `sv_pure`).
-    Ready {
-        mod_hash: u64,
-    },
+    Ready { mod_hash: u64 },
     /// Asks for a file the client lacks: the map, its textures and scenery
     /// ([`downloadable`] paths).
     Download(String),
     /// Changes to a team (`ChangeTeam`): 0 no team, 1-4, 5 spectators.
     JoinTeam(u8),
     /// The weapons to respawn with, by `WeaponKind` index (`SelWeapon`, `SecWep`).
-    Loadout {
-        primary: u8,
-        secondary: u8,
-    },
+    Loadout { primary: u8, secondary: u8 },
     /// Sent every tick (unreliable).
     Control(ControlState),
     Chat {
         text: String,
         team: bool,
+        /// A radio message (`MSGTYPE_RADIO`, for the team): the radio menu's two digits.
+        radio: Option<u8>,
     },
     /// A command line (without the `/`): player commands (`kill`, `smoke`, ...), `adminlog`,
     /// `votemap`, and an admin's commands and server cvars (`ParseInput` from MSGTYPE_CMD).
@@ -136,10 +136,7 @@ pub enum ClientMessage {
     /// A shot of the player's slow weapon, or a grenade (`ClientSendBullet`).
     Bullet(BulletState),
     /// Starts a vote, or says yes to the running one (`ClientVoteKick`, `votemap`).
-    Vote {
-        kind: VoteKind,
-        reason: String,
-    },
+    Vote { kind: VoteKind, reason: String },
     /// Asks for the server's maps (`ClientVoteMap`, for the map menu).
     MapList,
 }
@@ -285,12 +282,23 @@ pub struct SoldierState / SoldierDelta {
     pub flags: i32,
     pub bonus: u8,
     pub bonus_time: i32,
-    /// Milliseconds to the server and back (0 for bots).
+    /// Milliseconds to the server and back (0 for bots), and the same in the server's ticks.
     pub ping: u16,
+    pub ping_ticks: u8,
     /// The stationary gun's thing slot, while on one.
     pub stat: Option<u8>,
     /// The weapons the player may pick (`WeaponSel`, [`Soldier::weapon_sel`]).
     pub weapon_sel: u16,
+    /// Standing, crouching or prone (`Position`): a client's copy goes prone or gets up when
+    /// its own differs.
+    pub position: u8,
+    /// The helmet and the cigar (`Look`: bit 0 no helmet, 1 an unlit cigar, 2 a lit one, 3
+    /// helmet style 2).
+    pub look: u8,
+    /// A dead soldier's ticks to its respawn (`RespawnCounter`), new in dead snapshots.
+    pub respawn_counter: i32,
+    /// Of the packets from the player, the share that came (`ConnectionQuality`, 0 to 100).
+    pub quality: u8,
 }
 }
 
@@ -299,24 +307,77 @@ state_with_delta! {
 pub struct ThingState / ThingDelta {
     pub slot: u8,
     pub kind: u8,
-    /// The skeleton's points (two to four).
+    /// The skeleton's points (two to four), and where they were a tick before.
     pub points: Vec<[f32; 2]>,
+    pub old_points: Vec<[f32; 2]>,
     pub holder: Option<PlayerNum>,
     pub in_base: bool,
     pub ammo: u8,
+    /// Lying still (`StaticType`): thing snapshots pass it by (but flags and guns on stands).
+    pub static_type: bool,
+    /// Its owner faced left (the images it's drawn with).
+    pub flip: bool,
 }
 }
 
 /// The match as clients see it, 30 times a second: the soldiers (by number) and the active
-/// things (by slot).
+/// things (by slot, but parachutes: every client makes its own).
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct Snapshot {
     /// Counts the server's ticks (across maps too): newer snapshots have larger ones.
     pub tick: u64,
     pub soldiers: Vec<SoldierState>,
     pub things: Vec<ThingState>,
+    /// The things' points are new (`ServerThingSnapshot`, every `net_t1_thingsnapshot`
+    /// ticks): clients move theirs that are far off. In between they're the last ones (but a
+    /// new thing's).
+    pub thing_snapshot: bool,
+    /// The dead soldiers' respawn counters are new (`ServerSkeletonSnapshot`, every
+    /// `net_t1_deadsnapshot` ticks); in between they're the last ones.
+    pub dead_snapshot: bool,
     pub team_scores: [i32; 6],
     pub time_left: i32,
+}
+
+/// How a soldier died (`ServerSpriteDeath`): what clients need to have the same body fall.
+#[derive(Debug, Clone, Default, PartialEq, Encode, Decode)]
+pub struct DeathState {
+    /// The skeleton point the killing hit struck (`Where`).
+    pub hit: u8,
+    /// The skeleton's points 1 to 16, and where they were a tick before.
+    pub skeleton: Vec<([f32; 2], [f32; 2])>,
+    /// The torn joints: constraints 2, 4, 20, 21 and 23 (bits 0 to 4).
+    pub torn: u8,
+    pub on_fire: u8,
+    pub respawn_counter: i32,
+    /// The last killing shot, for the killer's screen.
+    pub shot: Shot,
+}
+
+/// The constraints a death can tear, in [`DeathState::torn`]'s bit order.
+const TORN_CONSTRAINTS: [usize; 5] = [2, 4, 20, 21, 23];
+
+impl DeathState {
+    /// `soldier` just died from a hit on point `hit`.
+    pub fn of(soldier: &Soldier, hit: u8, shot: Shot) -> DeathState {
+        let skeleton = &soldier.skeleton;
+        let constraints = skeleton.constraints();
+        let torn = TORN_CONSTRAINTS
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| constraints.get(**c - 1).is_some_and(|c| !c.active))
+            .fold(0, |bits, (i, _)| bits | (1 << i));
+        DeathState {
+            hit,
+            skeleton: (1..=skeleton.len().min(16))
+                .map(|i| (skeleton.pos(i).into(), skeleton.old_pos(i).into()))
+                .collect(),
+            torn,
+            on_fire: soldier.on_fire,
+            respawn_counter: soldier.respawn_counter,
+            shot,
+        }
+    }
 }
 
 /// A snapshot as what changed since one the client has (`base`, which it acknowledged):
@@ -331,6 +392,8 @@ pub struct SnapshotDelta {
     pub things: Vec<ThingDelta>,
     pub new_things: Vec<ThingState>,
     pub gone_things: Vec<u8>,
+    pub thing_snapshot: bool,
+    pub dead_snapshot: bool,
     pub team_scores: Option<[i32; 6]>,
     pub time_left: Option<i32>,
 }
@@ -359,6 +422,8 @@ impl SnapshotDelta {
             things,
             new_things,
             gone_things,
+            thing_snapshot: snapshot.thing_snapshot,
+            dead_snapshot: snapshot.dead_snapshot,
             team_scores: (base.team_scores != snapshot.team_scores).then_some(snapshot.team_scores),
             time_left: (base.time_left != snapshot.time_left).then_some(snapshot.time_left),
         }
@@ -392,6 +457,8 @@ impl SnapshotDelta {
             tick: self.tick,
             soldiers,
             things,
+            thing_snapshot: self.thing_snapshot,
+            dead_snapshot: self.dead_snapshot,
             team_scores: self.team_scores.unwrap_or(base.team_scores),
             time_left: self.time_left.unwrap_or(base.time_left),
         }
@@ -461,6 +528,8 @@ pub enum ServerMessage {
         /// The killing bullet's `WeaponKind` index.
         weapon: Option<u8>,
         headshot: bool,
+        /// The body as it fell, for clients to have the same one.
+        death: DeathState,
     },
     Respawned {
         num: PlayerNum,
@@ -476,6 +545,8 @@ pub enum ServerMessage {
         from: PlayerNum,
         text: String,
         team: bool,
+        /// A radio message from the team: the radio menu's two digits.
+        radio: Option<u8>,
     },
     ThingTaken {
         slot: u8,
@@ -528,6 +599,11 @@ pub enum ServerMessage {
     },
     /// The server doesn't have the file (or won't give it).
     NoFile(String),
+    /// Synced server cvars that changed (`ServerSyncCvars`): clients play by them at once.
+    Cvars(Vec<(String, String)>),
+    /// The server loaded other weapons (`loadwep`, `ServerVars`): weapons.ini and
+    /// weapons_realistic.ini, like [`ServerMessage::Welcome`]'s.
+    Weapons([Option<String>; 2]),
 }
 
 /// A file's fingerprint (64-bit FNV-1a): good enough to tell two versions of a map apart.
@@ -623,6 +699,61 @@ pub fn death_num(how: DeathKind) -> u8 {
     }
 }
 
+/// `Look`'s bits: no helmet, an unlit cigar, a lit one, helmet style 2.
+const LOOK_NO_HELMET: u8 = 1;
+const LOOK_CIGAR: u8 = 2;
+const LOOK_LIT_CIGAR: u8 = 4;
+const LOOK_HELMET_2: u8 = 8;
+
+/// A soldier's helmet and cigar as `ServerSpriteSnapshot`'s `Look`.
+fn look_of(soldier: &Soldier) -> u8 {
+    let mut look = 0;
+    if soldier.wear_helmet == 0 {
+        look |= LOOK_NO_HELMET;
+    }
+    if soldier.has_cigar == 5 {
+        look |= LOOK_CIGAR;
+    }
+    if soldier.has_cigar == 10 {
+        look |= LOOK_LIT_CIGAR;
+    }
+    if soldier.wear_helmet == 2 {
+        look |= LOOK_HELMET_2;
+    }
+    look
+}
+
+impl Soldier {
+    /// `Look` on a client: the helmet (another's knocked off with a spark and its sound, like
+    /// `Delta_Helmet`) and the cigar (not while it's smoking one).
+    fn apply_look(&mut self, look: u8, own: bool) {
+        let mut helmet = 1;
+        if look & LOOK_NO_HELMET != 0 {
+            helmet = 0;
+        }
+        if look & LOOK_HELMET_2 != 0 {
+            helmet = 2;
+        }
+        if helmet == 0 && self.wear_helmet != 0 && !own {
+            let head = self.skeleton.pos(12);
+            self.spark(head, self.particle.velocity, 6, 198);
+            self.play_sound(Sound::new(Sfx::Headchop).at(head));
+        }
+        self.wear_helmet = helmet;
+        let smoking = matches!(self.body_animation.id, Anim::Cigar | Anim::Smoke)
+            || (self.idle_random == 1 && self.body_animation.id == Anim::Stand);
+        if !smoking {
+            self.has_cigar = 0;
+            if look & LOOK_CIGAR != 0 {
+                self.has_cigar = 5;
+            }
+            if look & LOOK_LIT_CIGAR != 0 {
+                self.has_cigar = 10;
+            }
+        }
+    }
+}
+
 impl SoldierState {
     /// What a client needs to know about `soldier` (`num` on the server).
     pub fn of(num: PlayerNum, soldier: &Soldier) -> SoldierState {
@@ -634,10 +765,17 @@ impl SoldierState {
             (c.down, Buttons::CROUCH),
             (c.fire, Buttons::FIRE),
             (c.jets, Buttons::JETS),
-            (c.change_weapon, Buttons::CHANGE_WEAPON),
+            // (held while the animation lasts, for others to see it; prone goes by the
+            // position: `EncodeKeys`)
+            (
+                c.change_weapon || soldier.body_animation.id == Anim::Change,
+                Buttons::CHANGE_WEAPON,
+            ),
             (c.throw_nade, Buttons::THROW),
-            (c.throw_weapon, Buttons::DROP),
-            (c.prone, Buttons::PRONE),
+            (
+                c.throw_weapon || soldier.body_animation.id == Anim::ThrowWeapon,
+                Buttons::DROP,
+            ),
             (c.flag_throw, Buttons::FLAG_THROW),
             (c.reload, Buttons::RELOAD),
         ]
@@ -667,8 +805,13 @@ impl SoldierState {
             bonus: soldier.bonus_style as u8,
             bonus_time: soldier.bonus_time,
             ping: soldier.ping,
+            ping_ticks: soldier.ping_ticks,
             stat: soldier.stat.map(|slot| slot as u8),
             weapon_sel: soldier.weapon_sel,
+            position: soldier.position,
+            look: look_of(soldier),
+            respawn_counter: soldier.respawn_counter,
+            quality: soldier.connection_quality,
         }
     }
 
@@ -682,12 +825,19 @@ impl SoldierState {
 
 impl World {
     /// A client takes the server's view of a soldier. `own` is the client's own soldier,
-    /// whose movement and controls the client knows better.
-    pub fn apply_soldier_state(&mut self, id: SoldierId, state: &SoldierState, own: bool) {
+    /// whose movement and controls the client knows better; `dead_snapshot`: the respawn
+    /// counter is new.
+    pub fn apply_soldier_state(
+        &mut self,
+        id: SoldierId,
+        state: &SoldierState,
+        own: bool,
+        dead_snapshot: bool,
+    ) {
         let weapons = self.config.weapons.clone();
         // a death or respawn whose message hasn't come (or got here first)
         match self.soldiers.get(id).map(|s| s.dead_meat) {
-            Some(false) if state.dead => self.apply_death(id, None, DeathKind::Normal),
+            Some(false) if state.dead => self.apply_death(id, None, DeathKind::Normal, None, None),
             Some(true) if !state.dead => self.apply_respawn(id, Vec2::from(state.pos)),
             None => return,
             _ => {}
@@ -697,9 +847,21 @@ impl World {
         };
         if !own {
             soldier.apply_input(&state.input());
-            soldier.particle.pos = Vec2::from(state.pos);
-            soldier.particle.velocity = Vec2::from(state.velocity);
+            // not where the server has it if it got hurt meanwhile (its knock-back is
+            // coming here too)
+            if soldier.health == state.health {
+                soldier.particle.pos = Vec2::from(state.pos);
+                soldier.particle.velocity = Vec2::from(state.velocity);
+            }
             soldier.jets_count = state.jets;
+            // prone toggles when it was activated or deactivated
+            soldier.control.prone =
+                (state.position == POS_PRONE) != (soldier.position == POS_PRONE);
+        }
+        soldier.apply_look(state.look, own);
+        // (`ServerSkeletonSnapshot`)
+        if dead_snapshot && state.dead {
+            soldier.respawn_counter = state.respawn_counter;
         }
         soldier.health = state.health;
         soldier.vest = state.vest;
@@ -717,27 +879,81 @@ impl World {
         soldier.bonus_time = state.bonus_time;
         soldier.bonus_style = Bonus::from_num(state.bonus);
         soldier.ping = state.ping;
+        soldier.ping_ticks = state.ping_ticks;
+        soldier.connection_quality = state.quality;
         soldier.stat = state.stat.map(usize::from);
         soldier.weapon_sel = state.weapon_sel;
     }
 
-    /// A client: the server says `id` died.
-    pub fn apply_death(&mut self, id: SoldierId, killer: Option<SoldierId>, how: DeathKind) {
+    /// A client: the server says `id` died (`ClientHandleSpriteDeath`): with `death`, the
+    /// body falls from where the server's did, torn the same.
+    pub fn apply_death(
+        &mut self,
+        id: SoldierId,
+        killer: Option<SoldierId>,
+        how: DeathKind,
+        weapon: Option<WeaponKind>,
+        death: Option<&DeathState>,
+    ) {
         let Some(soldier) = self.soldiers.get_mut(id) else {
             return;
         };
-        if soldier.dead_meat {
-            return;
+        let was_alive = !soldier.dead_meat;
+        if was_alive && let Some(death) = death {
+            let skeleton = &mut soldier.skeleton;
+            for (i, (pos, old)) in death.skeleton.iter().enumerate() {
+                // (Soldat's skips points at 0)
+                let set = [pos[0], pos[1], old[0], old[1]]
+                    .iter()
+                    .all(|v| v.round() != 0.0);
+                if set && i < skeleton.len() {
+                    *skeleton.pos_mut(i + 1) = Vec2::from(*pos);
+                    *skeleton.old_pos_mut(i + 1) = Vec2::from(*old);
+                }
+            }
+            // the points that double others
+            if skeleton.len() >= 20 && death.skeleton.len() >= 16 {
+                for (point, from) in [(17, 0), (18, 1), (19, 14), (20, 15)] {
+                    let (pos, old) = death.skeleton[from];
+                    *skeleton.pos_mut(point) = Vec2::from(pos);
+                    *skeleton.old_pos_mut(point) = Vec2::from(old);
+                }
+            }
         }
-        let head = soldier.skeleton.pos(12);
-        let by = HitBy {
-            killer,
-            ..Default::default()
-        };
-        self.bullet_time_kill(killer.unwrap_or(id));
-        let soldier = &mut self.soldiers[id];
-        soldier.die(how, 1, head, &self.config, false, by, &mut self.rng);
-        self.process_drops();
+        if was_alive {
+            let berserk = killer
+                .and_then(|k| self.soldiers.get(k))
+                .is_some_and(|k| k.bonus_style == Bonus::Berserker);
+            let by = HitBy {
+                killer,
+                other: killer.is_some_and(|k| k != id),
+                weapon,
+                ..Default::default()
+            };
+            let hit = death.map_or(1, |d| usize::from(d.hit.max(1)));
+            self.bullet_time_kill(killer.unwrap_or(id));
+            let soldier = &mut self.soldiers[id];
+            soldier.die(
+                how,
+                hit,
+                Vec2::ZERO,
+                &self.config,
+                berserk,
+                by,
+                &mut self.rng,
+            );
+            self.process_drops();
+        }
+        if let Some(death) = death {
+            let soldier = &mut self.soldiers[id];
+            for (i, c) in TORN_CONSTRAINTS.iter().enumerate() {
+                soldier
+                    .skeleton
+                    .set_constraint_active(*c, death.torn & (1 << i) == 0);
+            }
+            soldier.respawn_counter = death.respawn_counter;
+            soldier.on_fire = death.on_fire;
+        }
     }
 
     /// A client: the server respawned `id` at `pos`.
@@ -764,18 +980,27 @@ impl ThingState {
             points: (1..=thing.skeleton.len())
                 .map(|i| thing.skeleton.pos(i).into())
                 .collect(),
+            old_points: (1..=thing.skeleton.len())
+                .map(|i| thing.skeleton.old_pos(i).into())
+                .collect(),
             holder: thing.holding.and_then(num),
             in_base: thing.in_base,
             ammo: thing.ammo_count,
+            static_type: thing.static_type,
+            flip: thing.flip,
         }
     }
 }
 
 impl World {
-    /// A client takes the server's things, slot by slot; the others are gone.
+    /// A client takes the server's things, slot by slot; the others are gone (but its own
+    /// parachutes). Like Soldat's (`ClientHandleServerThingSnapshot`) it moves its things
+    /// itself: a new one comes where the server has it, an other only when a thing snapshot
+    /// finds it far off (both ends 10 apart, or a held one 330 from its holder).
     pub fn apply_things(
         &mut self,
         states: &[ThingState],
+        thing_snapshot: bool,
         soldier: impl Fn(PlayerNum) -> Option<SoldierId>,
     ) {
         let mut seen = vec![false; self.things.len()];
@@ -788,7 +1013,8 @@ impl World {
                 continue;
             }
             seen[slot] = true;
-            if !self.things[slot].active || self.things[slot].kind != kind {
+            let new = !self.things[slot].active || self.things[slot].kind != kind;
+            if new {
                 let mut things = std::mem::take(&mut self.things);
                 let pos = state.points.first().map_or(Vec2::ZERO, |p| Vec2::from(*p));
                 create_thing(
@@ -801,25 +1027,100 @@ impl World {
                     None,
                 );
                 self.things = things;
+                self.things[slot].flip = state.flip;
             }
+
+            let holding = state.holder.and_then(&soldier);
+            // not held anymore
+            if holding.is_none() {
+                for soldier in self.soldiers.values_mut() {
+                    if soldier.holded_thing == Some(slot) {
+                        soldier.holded_thing = None;
+                        soldier.holds_flag = false;
+                    }
+                }
+            }
+
+            let thing = &self.things[slot];
+            let off = |i: usize, by: f32| {
+                state
+                    .points
+                    .get(i)
+                    .is_some_and(|p| distance(thing.pos(i + 1), Vec2::from(*p)) > by)
+            };
+            let far = match holding {
+                None => kind != ThingKind::StationaryGun && off(0, 10.0) && off(1, 10.0),
+                Some(holder) => {
+                    kind != ThingKind::Parachute
+                        && self
+                            .soldiers
+                            .get(holder)
+                            .is_some_and(|h| distance(thing.pos(1), h.particle.pos) > 330.0)
+                }
+            };
+            // Soldat's thing snapshots leave out things lying still (but flags and guns)
+            let snapshotted = thing_snapshot
+                && (kind.is_flag() || kind == ThingKind::StationaryGun || !state.static_type);
             let thing = &mut self.things[slot];
-            // moved, keeping the verlet velocity
-            let points = state.points.len().min(thing.skeleton.len());
-            for (i, p) in state.points.iter().take(points).enumerate() {
-                let p = Vec2::from(*p);
-                let shift = p - thing.skeleton.pos(i + 1);
-                *thing.skeleton.pos_mut(i + 1) = p;
-                *thing.skeleton.old_pos_mut(i + 1) += shift;
+            if new || (snapshotted && far) {
+                let points = state.points.len().min(thing.skeleton.len());
+                for i in 0..points {
+                    let pos = Vec2::from(state.points[i]);
+                    let old = state.old_points.get(i).map_or(pos, |p| Vec2::from(*p));
+                    *thing.skeleton.pos_mut(i + 1) = pos;
+                    *thing.skeleton.old_pos_mut(i + 1) = old;
+                }
             }
-            thing.holding = state.holder.and_then(&soldier);
+            thing.holding = holding;
             thing.in_base = state.in_base;
             thing.ammo_count = state.ammo;
+            if new || snapshotted {
+                thing.static_type = false;
+            }
         }
         for (slot, thing) in self.things.iter_mut().enumerate() {
-            if thing.active && !seen[slot] {
+            if thing.active && !seen[slot] && thing.kind != ThingKind::Parachute {
                 thing.kill();
             }
         }
+    }
+
+    /// A client: the server says `who` took the flag in `slot` (`ClientHandleThingTaken`):
+    /// it's theirs, or back home if it's their team's (CTF and Infiltration).
+    pub fn apply_flag_taken(&mut self, slot: usize, kind: ThingKind, who: SoldierId) {
+        let Some(team) = self.soldiers.get(who).map(|s| s.team) else {
+            return;
+        };
+        let Some(thing) = self
+            .things
+            .get_mut(slot)
+            .filter(|t| t.active && t.kind == kind)
+        else {
+            return;
+        };
+        thing.holding = Some(who);
+        thing.static_type = false;
+        let returned = team == thing.flag_team()
+            && matches!(
+                self.config.game_mode,
+                GameMode::CaptureTheFlag | GameMode::Infiltration
+            );
+        if returned {
+            self.respawn_thing(slot);
+        }
+    }
+
+    /// A client: the server sent `slot`'s thing home (a flag returned or captured), which
+    /// Soldat's clients do themselves (`TThing.Respawn` on `ThingTaken` and `FlagInfo`).
+    pub fn respawn_thing(&mut self, slot: usize) {
+        if !self.things.get(slot).is_some_and(|t| t.active) {
+            return;
+        }
+        let mut thing = std::mem::take(&mut self.things[slot]);
+        let others = std::mem::take(&mut self.things);
+        thing.respawn(slot, &mut self.thing_ctx());
+        self.things = others;
+        self.things[slot] = thing;
     }
 }
 
@@ -854,6 +1155,8 @@ pub enum Notice {
         how: DeathKind,
         weapon: Option<WeaponKind>,
         headshot: bool,
+        hit: u8,
+        shot: Shot,
     },
     Respawned {
         id: SoldierId,
@@ -862,8 +1165,10 @@ pub enum Notice {
         who: SoldierId,
         text: String,
         team: bool,
+        radio: Option<u8>,
     },
     ThingTaken {
+        slot: usize,
         kind: ThingKind,
         who: SoldierId,
         pos: Vec2,
@@ -894,6 +1199,10 @@ pub enum Notice {
     VoteOff,
     MapList(Vec<String>),
     ServerText(String),
+    /// Server cvars to play by now (`ClientHandleSyncCvars`).
+    Cvars(Vec<(String, String)>),
+    /// The server's weapons mods now.
+    Weapons([Option<String>; 2]),
 }
 
 /// A client's side of the protocol, without the transport: which soldier each player number
@@ -958,17 +1267,29 @@ impl NetClient {
         Some(ServerMessage::Snapshot(snapshot))
     }
 
-    /// The control message for this tick: the input, and where the own soldier is.
+    /// The control message for this tick: the input, and where the own soldier is; without
+    /// one yet (picking a team), the newest snapshot only.
     pub fn control(&self, world: &World, input: &Input) -> Option<ClientMessage> {
-        let soldier = world.soldiers.get(self.own()?)?;
+        self.you?;
+        let soldier = self.own().and_then(|id| world.soldiers.get(id));
+        let (buttons, pos, velocity, position) = match soldier {
+            Some(s) => (
+                input.buttons.bits(),
+                s.particle.pos,
+                s.particle.velocity,
+                s.position,
+            ),
+            None => (0, Vec2::ZERO, Vec2::ZERO, POS_STAND),
+        };
         Some(ClientMessage::Control(ControlState {
             tick: world.tick,
-            buttons: input.buttons.bits(),
+            buttons,
             aim: input.aim.into(),
-            pos: soldier.particle.pos.into(),
-            velocity: soldier.particle.velocity.into(),
+            pos: pos.into(),
+            velocity: velocity.into(),
             snapshot: self.snapshots.back().map_or(0, |s| s.tick),
             resets: self.resets,
+            position,
         }))
     }
 
@@ -1014,6 +1335,8 @@ impl NetClient {
             ServerMessage::VoteOff => Notice::VoteOff,
             ServerMessage::MapList(maps) => Notice::MapList(maps),
             ServerMessage::ServerText(text) => Notice::ServerText(text),
+            ServerMessage::Cvars(cvars) => Notice::Cvars(cvars),
+            ServerMessage::Weapons(mods) => Notice::Weapons(mods),
             message => return Err(message),
         })
     }
@@ -1039,10 +1362,14 @@ impl NetClient {
                 let soldier = &mut world.soldiers[id];
                 soldier.name = info.name;
                 soldier.remote = Some(info.num) != self.you;
+                soldier.bot = info.bot;
                 info.looks.apply(soldier);
                 let changed = soldier.team != team;
                 if team == Team::Spectator {
-                    if !soldier.is_spectator() {
+                    // a newcomer drops nothing; a player changing to the spectators does
+                    if new {
+                        world.add_spectator(id);
+                    } else if !soldier.is_spectator() {
                         world.join_spectators(id);
                     }
                 } else {
@@ -1086,10 +1413,12 @@ impl NetClient {
                 for state in &snapshot.soldiers {
                     if let Some(id) = self.soldier(state.num) {
                         let own = Some(state.num) == self.you;
-                        world.apply_soldier_state(id, state, own);
+                        world.apply_soldier_state(id, state, own, snapshot.dead_snapshot);
                     }
                 }
-                world.apply_things(&snapshot.things, |num| self.soldier(num));
+                world.apply_things(&snapshot.things, snapshot.thing_snapshot, |num| {
+                    self.soldier(num)
+                });
                 world.game.team_scores = snapshot.team_scores;
                 world.game.time_left = snapshot.time_left;
             }
@@ -1101,17 +1430,21 @@ impl NetClient {
                 how,
                 weapon,
                 headshot,
+                death,
             } => {
                 let victim = self.soldier(victim)?;
                 let killer = self.soldier(killer)?;
                 let how = death_kind(how);
-                world.apply_death(victim, Some(killer), how);
+                let weapon = weapon.map(weapon_kind);
+                world.apply_death(victim, Some(killer), how, weapon, Some(&death));
                 return Some(Notice::Killed {
                     victim,
                     killer,
                     how,
-                    weapon: weapon.map(weapon_kind),
+                    weapon,
                     headshot,
+                    hit: death.hit,
+                    shot: death.shot,
                 });
             }
             ServerMessage::Respawned { num, pos } => {
@@ -1129,20 +1462,53 @@ impl NetClient {
                 soldier.particle.old_pos = soldier.particle.pos;
                 soldier.particle.velocity = Vec2::from(velocity);
             }
-            ServerMessage::Chat { from, text, team } => {
+            ServerMessage::Chat {
+                from,
+                text,
+                team,
+                radio,
+            } => {
                 let who = self.soldier(from)?;
-                return Some(Notice::Chat { who, text, team });
+                return Some(Notice::Chat {
+                    who,
+                    text,
+                    team,
+                    radio,
+                });
             }
-            ServerMessage::ThingTaken { kind, by, pos, .. } => {
+            ServerMessage::ThingTaken {
+                slot,
+                kind,
+                by,
+                pos,
+            } => {
+                let kind = ThingKind::from_num(kind)?;
+                let who = self.soldier(by)?;
+                if kind.is_flag() {
+                    world.apply_flag_taken(usize::from(slot), kind, who);
+                }
                 return Some(Notice::ThingTaken {
-                    kind: ThingKind::from_num(kind)?,
-                    who: self.soldier(by)?,
+                    slot: usize::from(slot),
+                    kind,
+                    who,
                     pos: Vec2::from(pos),
                 });
             }
             ServerMessage::FlagCaptured { team, by } => {
+                let team = team_from_num(team);
+                // the other team's flag goes home
+                let flag = match team {
+                    Team::Alpha => Some(ThingKind::BravoFlag),
+                    Team::Bravo => Some(ThingKind::AlphaFlag),
+                    _ => None,
+                };
+                if let Some(slot) =
+                    flag.and_then(|f| world.things.iter().position(|t| t.active && t.kind == f))
+                {
+                    world.respawn_thing(slot);
+                }
                 return Some(Notice::FlagCaptured {
-                    team: team_from_num(team),
+                    team,
                     who: self.soldier(by)?,
                 });
             }
@@ -1169,8 +1535,8 @@ impl NetClient {
                 let id = self.soldier(owner).filter(|&id| Some(id) != self.own())?;
                 // both players' pings (`PingTicks`, round trips) and `PingTicksAdd`
                 let own_ping = self.own().and_then(|own| world.soldiers.get(own));
-                let advance = ping_ticks(own_ping.map_or(0, |s| s.ping))
-                    + ping_ticks(world.soldiers.get(id)?.ping)
+                let advance = u32::from(own_ping.map_or(0, |s| s.ping_ticks))
+                    + u32::from(world.soldiers.get(id)?.ping_ticks)
                     + PING_TICKS_ADD;
                 world.receive_bullet(id, &bullet, advance);
             }
@@ -1181,7 +1547,9 @@ impl NetClient {
             | ServerMessage::NoFile(_)
             | ServerMessage::VoteOff
             | ServerMessage::MapList(_)
-            | ServerMessage::ServerText(_) => unreachable!("session messages are applied above"),
+            | ServerMessage::ServerText(_)
+            | ServerMessage::Cvars(_)
+            | ServerMessage::Weapons(_) => unreachable!("session messages are applied above"),
         }
         None
     }
@@ -1189,11 +1557,6 @@ impl NetClient {
 
 /// A client moves others' bullets on by this many ticks more than the pings (`PingTicksAdd`).
 const PING_TICKS_ADD: u32 = 2;
-
-/// Milliseconds in ticks (`PingTicks`).
-fn ping_ticks(ms: u16) -> u32 {
-    (u32::from(ms) * 60 + 500) / 1000
-}
 
 /// A bullet to send over the network (see [`World::net_bullets`]).
 #[derive(Debug, Clone, PartialEq)]
@@ -1284,6 +1647,7 @@ impl World {
         let Some(soldier) = self.soldiers.get(owner) else {
             return;
         };
+        let soldier_ping_ticks = soldier.ping_ticks;
         let weapons = &self.config.weapons;
         let kind = weapon_kind(state.weapon);
         let gun = weapons.get(kind);
@@ -1345,10 +1709,18 @@ impl World {
             self.rng.rand_seed = saved_seed;
         }
 
-        let mut slots: Vec<usize> = self
-            .create_bullet_in_slot(&first, owner)
-            .into_iter()
-            .collect();
+        let first_slot = self.create_bullet_in_slot(&first, owner);
+        // the shot is late by the owner's ping (its other pellets aren't told so)
+        if self.config.client
+            && let Some(slot) = first_slot
+        {
+            let late = u32::from(soldier_ping_ticks) + PING_TICKS_ADD;
+            let bullet = &mut self.bullets[slot];
+            bullet.owner_ping_tick = late.min(255) as u8;
+            bullet.ping_add = advance.min(i16::MAX as u32) as i16;
+            bullet.ping_add_start = bullet.ping_add;
+        }
+        let mut slots: Vec<usize> = first_slot.into_iter().collect();
         for params in &others {
             slots.extend(self.create_bullet_in_slot(params, owner));
         }
@@ -1722,8 +2094,13 @@ mod tests {
             bonus: 0,
             bonus_time: 0,
             ping: 85,
+            ping_ticks: 5,
             stat: Some(7),
             weapon_sel: 0x3ff,
+            position: 1,
+            look: 0,
+            respawn_counter: 0,
+            quality: 100,
         }
     }
 
@@ -1732,9 +2109,12 @@ mod tests {
             slot,
             kind: 1,
             points: vec![[10.0, 20.0], [12.0, 20.0], [10.0, 40.0], [12.0, 40.0]],
+            old_points: vec![[10.0, 20.0], [12.0, 20.0], [10.0, 40.0], [12.0, 40.0]],
             holder: None,
             in_base: true,
             ammo: 0,
+            static_type: false,
+            flip: false,
         }
     }
 
@@ -1744,6 +2124,8 @@ mod tests {
             tick: 42,
             soldiers: vec![soldier(3)],
             things: vec![thing(1)],
+            thing_snapshot: true,
+            dead_snapshot: true,
             team_scores: [0, 3, 1, 0, 0, 0],
             time_left: 3600,
         });
@@ -1757,6 +2139,7 @@ mod tests {
             velocity: [0.1, -0.2],
             snapshot: 40,
             resets: 3,
+            position: 3,
         });
         assert_eq!(decode::<ClientMessage>(&encode(&message)), Some(message));
         assert_eq!(decode::<ClientMessage>(&[0xff, 0x00]), None);
@@ -1768,6 +2151,8 @@ mod tests {
             tick: 40,
             soldiers: vec![soldier(1), soldier(2), soldier(3)],
             things: vec![thing(1), thing(2)],
+            thing_snapshot: true,
+            dead_snapshot: true,
             team_scores: [0, 3, 1, 0, 0, 0],
             time_left: 3600,
         };
@@ -1823,6 +2208,8 @@ mod tests {
             tick: 10,
             soldiers: vec![soldier(1)],
             things: Vec::new(),
+            thing_snapshot: true,
+            dead_snapshot: true,
             team_scores: [0; 6],
             time_left: 100,
         };

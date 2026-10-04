@@ -45,6 +45,8 @@ pub struct InterfaceState<'a> {
     pub con_info: Option<ConInfo>,
     /// A demo is being recorded: the blinking REC.
     pub recording: bool,
+    pub snap_offered: bool,
+    pub no_crosshair: bool,
     /// Bullet time: the screen cut wide (`WideScreenCut`).
     pub wide_cut: bool,
 }

@@ -10,8 +10,14 @@ const STANDSURFACECOEFX: f64 = 0.00;
 const STANDSURFACECOEFY: f64 = 0.00;
 
 pub const POS_STAND: u8 = 1;
+
+/// Ticks of positions a client keeps of each soldier (`MAX_OLDPOS`), to check another
+/// player's bullets against where its owner saw them.
+pub const MAX_OLDPOS: usize = 125;
+/// How many ticks ahead a client queues knock-back (`MAX_PUSHTICK`; 0 on the server).
+pub const MAX_PUSHTICK: usize = 125;
 pub(crate) const POS_CROUCH: u8 = 2;
-pub(crate) const POS_PRONE: u8 = 3;
+pub const POS_PRONE: u8 = 3;
 
 const MAX_INACCURACY: f32 = 0.5;
 
@@ -169,8 +175,12 @@ pub struct Soldier {
     /// Spawn protection ticks left, -1 when inactive.
     pub ceasefire_counter: i32,
     pub team: Team,
-    /// Knock-back from hits, applied at the start of the next update (server semantics).
-    pub next_push: Vec2,
+    /// Knock-back from hits by the tick it comes (`NextPush`): the first at the start of
+    /// the next update. The server (and a game alone) only has that one; a client queues a
+    /// hit's for when the server's comes, the pings' ticks ahead.
+    pub next_push: [Vec2; MAX_PUSHTICK + 1],
+    /// A client's: where the soldier was the last ticks, the newest first (`OldSpritePos`).
+    pub old_positions: [Vec2; MAX_OLDPOS + 1],
     pub respawn_counter: i32,
     pub dead_time: i32,
     pub dead_collide_count: i32,
@@ -231,8 +241,19 @@ pub struct Soldier {
     pub respawn_held: Option<usize>,
     /// Flag captures (`Player.Flags`).
     pub flags: i32,
-    /// `Player.RealPing`: the round trip to the server in milliseconds (network play).
+    /// `Player.RealPing`: the network's round trip to the server in milliseconds (network
+    /// play), for the scoreboard and `sv_maxping`.
     pub ping: u16,
+    /// `Player.PingTicks`: the round trip in the server's ticks, its waits for them included,
+    /// for moving others' bullets on.
+    pub ping_ticks: u8,
+    /// `Player.ConnectionQuality`: of the packets from the player, the share that came (0 to
+    /// 100; a bot's is 0).
+    pub connection_quality: u8,
+    /// A bot, as a client knows (the brain is the server's).
+    pub bot: bool,
+    /// The player muted them (`mute`): their chat and radio don't show.
+    pub muted: bool,
     /// Ticks until a thrown flag can be grabbed again (`FlagGrabCooldown`).
     pub flag_grab_cooldown: i32,
     /// Multikill window (`MultiKillTime`) and count.
@@ -450,7 +471,8 @@ impl Soldier {
             remote: false,
             ceasefire_counter: -1,
             team: Team::None,
-            next_push: Vec2::ZERO,
+            next_push: [Vec2::ZERO; MAX_PUSHTICK + 1],
+            old_positions: [Vec2::ZERO; MAX_OLDPOS + 1],
             respawn_counter: 0,
             dead_time: 0,
             dead_collide_count: 0,
@@ -480,6 +502,10 @@ impl Soldier {
             respawn_held: None,
             flags: 0,
             ping: 0,
+            ping_ticks: 0,
+            connection_quality: 100,
+            bot: false,
+            muted: false,
             flag_grab_cooldown: 0,
             multi_kill_time: 0,
             multi_kills: 0,
@@ -537,7 +563,13 @@ impl Soldier {
     pub fn drop_weapon(&mut self, config: &WorldConfig) {
         self.dropped_weapon = true;
         let weapon = *self.primary_weapon();
-        if let Some(kind) = ThingKind::for_weapon(weapon.kind) {
+        // Rambo mode: the bow goes too
+        let bow = weapon.kind == WeaponKind::Bow || weapon.kind == WeaponKind::FlameBow;
+        let kind = match ThingKind::for_weapon(weapon.kind) {
+            None if bow && config.game_mode == GameMode::Rambo => Some(ThingKind::RamboBow),
+            kind => kind,
+        };
+        if let Some(kind) = kind {
             self.pending_drop = Some(WeaponDrop {
                 kind,
                 ammo_count: weapon.ammo_count,
@@ -547,9 +579,19 @@ impl Soldier {
                 dead: self.dead_meat,
             });
         }
-        // TODO: Rambo mode drops the bow
         // ApplyWeaponByNum(NOWEAPON) even with empty hands: a fresh fire interval
         self.weapons[self.active_weapon] = config.weapons.get(WeaponKind::NoWeapon);
+    }
+
+    /// A client keeps where the soldier is now (`Ping Impr`, `OldSpritePos`).
+    fn remember_position(&mut self) {
+        self.old_positions.copy_within(..MAX_OLDPOS, 1);
+        self.old_positions[0] = self.particle.pos;
+    }
+
+    /// A bot: the brain's here (the server, a game alone), or a client was told.
+    pub fn is_bot(&self) -> bool {
+        self.brain.is_some() || self.bot
     }
 
     /// Lets go of the parachute (the world detaches the thing).
@@ -667,23 +709,28 @@ impl Soldier {
         emitter: &mut Vec<EmitterItem>,
     ) {
         self.particle.euler();
-        self.update_begin();
+        self.update_begin(config.client);
         self.update_rest(map, config, tick, rng, emitter);
     }
 
     /// The start of an update, before the controls are read (a bot thinks after it).
     /// The particle has been integrated already (the world integrates every soldier
     /// first, like `UpdateFrame`).
-    pub fn update_begin(&mut self) {
+    pub fn update_begin(&mut self, client: bool) {
         self.recoil_kick = 0.0;
         // spray counter (UpdateFrame on the client)
         if self.local_player {
             self.hit_spray_counter = self.hit_spray_counter.saturating_sub(1);
         }
 
-        // knock-back from hits last tick (NextPush[0] on the server)
-        self.particle.velocity += self.next_push;
-        self.next_push = Vec2::ZERO;
+        // knock-back due now; a client's queue moves on
+        self.particle.velocity += self.next_push[0];
+        if client {
+            self.next_push.copy_within(1.., 0);
+            self.next_push[MAX_PUSHTICK] = Vec2::ZERO;
+        } else {
+            self.next_push[0] = Vec2::ZERO;
+        }
 
         // reload the spas after the shooting delay is over
         let weapon = *self.primary_weapon();
@@ -1145,12 +1192,18 @@ impl Soldier {
 
             self.skeleton.do_verlet_timestep_for(22, 29);
             self.skeleton.do_verlet_timestep_for(24, 30);
+            if config.client {
+                self.remember_position();
+            }
         }
 
         if self.dead_meat && !self.is_spectator() {
             // physically integrate skeleton particles
             self.skeleton.do_verlet_timestep();
             self.particle.pos = self.skeleton.pos(12);
+            if config.client {
+                self.remember_position();
+            }
 
             // CheckSkeletonOutOfBounds
             if !config.now.survival_end_round

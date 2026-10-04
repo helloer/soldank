@@ -168,8 +168,11 @@ fn refreshx_is_soldats_record() {
     game.game
         .add_bot(&mut game.server, "Dutch", soldank_core::Team::Alpha)
         .unwrap();
-    let _alice = game.join(hello("Alice"), Link::perfect());
+    let alice = game.join(hello("Alice"), Link::perfect());
     game.settle_steps(30);
+    // (in the game once a team is picked)
+    game.clients[alice].0.send(&ClientMessage::JoinTeam(2));
+    game.settle_steps(5);
     let packet = game.game.refresh_x();
     assert_eq!(packet.len(), soldank_server::rcon::REFRESHX_SIZE);
     assert_eq!(&packet[..10], b"REFRESHX\r\n");
@@ -244,6 +247,7 @@ fn pause_mute_pm_and_info() {
     let say = ClientMessage::Chat {
         text: "admin sucks".into(),
         team: false,
+        radio: None,
     };
     game.clients[bob].0.send(&say);
     game.clients[alice].0.send(&command("info"));
@@ -287,23 +291,23 @@ fn teams_stay_even() {
     let bob = game.join(hello("Bob"), Link::perfect());
     game.settle_steps(30);
     let team_of = |game: &TestMatch, name: &str| {
-        let soldier = game
-            .game
+        game.game
             .world
             .soldiers
             .values()
             .find(|s| s.name == name)
-            .unwrap();
-        soldier.team
+            .map(|s| s.team)
     };
     assert!(matches!(
         team_of(&game, "Carol"),
-        soldank_core::Team::Alpha | soldank_core::Team::Bravo
+        Some(soldank_core::Team::Alpha | soldank_core::Team::Bravo)
     ));
 
-    // Bob watches (no team asked for); the teams are 2:0, or 1:1 where the lowest is alpha
+    // Bob watches, not playing yet (no team asked for: the server waits for the team menu's
+    // pick); the teams are 2:0, or 1:1 where the lowest is alpha
+    assert_eq!(team_of(&game, "Bob"), None);
     let (alpha, bravo) = (soldank_core::Team::Alpha, soldank_core::Team::Bravo);
-    let carol_alpha = team_of(&game, "Carol") == alpha;
+    let carol_alpha = team_of(&game, "Carol") == Some(alpha);
     let (fuller, smaller) = if carol_alpha {
         (alpha, bravo)
     } else {
@@ -313,7 +317,7 @@ fn teams_stay_even() {
         .0
         .send(&ClientMessage::JoinTeam(fuller as u8));
     game.settle_steps(10);
-    assert_eq!(team_of(&game, "Bob"), soldank_core::Team::Spectator);
+    assert_eq!(team_of(&game, "Bob"), None);
     let full = if fuller == alpha {
         "Alpha team is full"
     } else {
@@ -324,15 +328,15 @@ fn teams_stay_even() {
         .0
         .send(&ClientMessage::JoinTeam(smaller as u8));
     game.settle_steps(10);
-    assert_eq!(team_of(&game, "Bob"), smaller);
+    assert_eq!(team_of(&game, "Bob"), Some(smaller));
 
     // one spectator at most (Soldat never counts them: its limit only works at 0)
     game.clients[0].0.send(&ClientMessage::JoinTeam(5));
     game.settle_steps(5);
     game.clients[bob].0.send(&ClientMessage::JoinTeam(5));
     game.settle_steps(10);
-    assert_eq!(team_of(&game, "Alice"), soldank_core::Team::Spectator);
-    assert_eq!(team_of(&game, "Bob"), smaller);
+    assert_eq!(team_of(&game, "Alice"), Some(soldank_core::Team::Spectator));
+    assert_eq!(team_of(&game, "Bob"), Some(smaller));
     assert!(texts(game.client(bob)).contains(&"Spectators are full".to_string()));
 }
 

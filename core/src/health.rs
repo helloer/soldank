@@ -28,6 +28,8 @@ pub struct Kill {
     pub victim_weapon: WeaponKind,
     /// The hit was on the head (skeleton point 12): a headshot in the weapon stats.
     pub head: bool,
+    /// The skeleton point hit (`Where`).
+    pub hit: u8,
 }
 
 /// A hit that got through (`HealthHit` past friendly fire and the flame god).
@@ -82,6 +84,13 @@ pub fn health_hit(
     if config.client {
         return None;
     }
+    // Rambo mode: while someone else holds the bow, nobody else hurts anybody
+    let bow = [WeaponKind::Bow, WeaponKind::FlameBow];
+    let rambo_elsewhere = config.game_mode == GameMode::Rambo
+        && victim != attacker
+        && soldiers.iter().any(|(id, s)| {
+            s.active && id != attacker && id != victim && s.primary_weapon().is_any(&bow)
+        });
     let soldier = soldiers.get_mut(victim)?;
 
     // friendly fire
@@ -98,7 +107,7 @@ pub fn health_hit(
         return None;
     }
 
-    if soldier.bonus_style == Bonus::Flamegod {
+    if soldier.bonus_style == Bonus::Flamegod || rambo_elsewhere {
         return None;
     }
 
@@ -132,6 +141,7 @@ pub fn health_hit(
         how,
         victim_weapon,
         head: where_ == 12,
+        hit: where_ as u8,
     });
     Some(Hurt { was_alive, kill })
 }
@@ -198,8 +208,6 @@ impl Soldier {
         if self.bonus_style == Bonus::Flamegod {
             return None;
         }
-
-        // TODO: Rambo mode bow immunity
 
         let mut hm = amount;
         if self.vest > 0.0 {
@@ -506,7 +514,7 @@ impl Soldier {
                 self.parachute_spawn = Some(vec2(a.x, a.y + 70.0));
             }
         }
-        self.next_push = Vec2::ZERO;
+        self.next_push = [Vec2::ZERO; MAX_PUSHTICK + 1];
         let pos = self.particle.pos;
         self.play_sound(Sound::new(Sfx::Spawn).at(pos).audience(Audience::Others));
         let v = self.particle.velocity;

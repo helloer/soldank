@@ -470,6 +470,8 @@ impl Game {
                 how,
                 weapon,
                 headshot,
+                hit,
+                shot,
             } => {
                 return Some(GameEvent::Killed {
                     victim,
@@ -477,6 +479,8 @@ impl Game {
                     how,
                     weapon,
                     headshot,
+                    hit,
+                    shot,
                 });
             }
             Notice::Respawned { id } => {
@@ -486,14 +490,53 @@ impl Game {
                     self.camera.pos_prev = self.camera.pos;
                 }
             }
-            Notice::Chat { who, text, team } => {
-                let length = self.console.cvars.int("ui_console_length") as usize;
-                self.hud
-                    .messages
-                    .chat(&self.world, who, &text, team, length);
+            Notice::Chat {
+                who,
+                text,
+                team,
+                radio,
+            } => match radio {
+                Some(digits) => self.radio_message(who, digits, &text),
+                None => {
+                    let length = self.console.cvars.int("ui_console_length") as usize;
+                    self.hud
+                        .messages
+                        .chat(&self.world, who, &text, team, length);
+                }
+            },
+            Notice::Cvars(cvars) => {
+                for (cvar, value) in &cvars {
+                    let _ = self.console.cvars.set_now(cvar, value);
+                }
+                // and for the maps to come
+                for (cvar, value) in cvars {
+                    match self.remote.cvars.iter_mut().find(|(c, _)| *c == cvar) {
+                        Some(known) => known.1 = value,
+                        None => self.remote.cvars.push((cvar, value)),
+                    }
+                }
             }
-            Notice::ThingTaken { kind, who, pos } => {
-                return Some(GameEvent::ThingTaken { kind, who, pos });
+            Notice::Weapons(mods) => {
+                let data = Arc::new(self.base_data.with_weapons_mods(&mods));
+                self.remote.weapons = mods;
+                self.remote.data = Some(data.clone());
+                self.world.data = data;
+                let rules = WorldConfig::from_cvars(&self.console.cvars, &self.world.data);
+                self.world.set_rules(rules);
+                self.world.reapply_weapons();
+            }
+            Notice::ThingTaken {
+                slot,
+                kind,
+                who,
+                pos,
+            } => {
+                return Some(GameEvent::ThingTaken {
+                    slot,
+                    kind,
+                    who,
+                    pos,
+                });
             }
             Notice::FlagCaptured { team, who } => {
                 return Some(GameEvent::FlagCaptured { team, who });

@@ -56,10 +56,17 @@ fn fight(link: impl Fn() -> Link, tolerance: f32, ping: std::ops::Range<u16>) {
     assert!(a.distance(b) < tolerance, "server {a}, bob {b}");
     // honest moves are never put back (`sv_movecheck`)
     assert_eq!(game.game.corrections(), 0);
-    // Bob knows Alice's ping
+    // Bob knows Alice's ping, and in ticks (for her bullets) with the tick it waits
     assert!(
         ping.contains(&on_bob.ping),
         "ping {} not in {ping:?}",
+        on_bob.ping
+    );
+    let ticks = u32::from(on_bob.ping_ticks);
+    let expected = (u32::from(on_bob.ping) * 60 / 1000) + 1;
+    assert!(
+        ticks.abs_diff(expected) <= 1,
+        "{ticks} ticks, ping {}",
         on_bob.ping
     );
 
@@ -91,8 +98,8 @@ fn fight(link: impl Fn() -> Link, tolerance: f32, ping: std::ops::Range<u16>) {
 
 #[test]
 fn clients_join_and_see_the_match() {
-    // snapshots are at most two ticks old
-    fight(Link::perfect, 20.0, 0..50);
+    // snapshots are at most two ticks old; next door, the ping is about none (like Soldat's)
+    fight(Link::perfect, 20.0, 0..5);
 }
 
 #[test]
@@ -137,6 +144,172 @@ fn flags_reach_the_clients() {
     let world = game.client(alice).world.as_ref().unwrap();
     let me = &world.soldiers[game.client(alice).net.own().unwrap()];
     assert_eq!(me.team, Team::Alpha);
+}
+
+#[test]
+fn carried_flags_stay_in_hand_on_a_client() {
+    let Some(mut game) = TestMatch::new("ctf_Ash", &[("sv_gamemode", "3")]) else {
+        return;
+    };
+    for (bot, team) in [("Dutch", 1), ("Kruger", 2)] {
+        game.game
+            .add_bot(&mut game.server, bot, team_from_num(team))
+            .unwrap();
+    }
+    let alice = game.join(hello("Alice"), Link::lossy(3, 0.0));
+    // Kruger keeps finding the alpha flag at his feet and runs off with it: on Alice's client
+    // (50 ms away) it's in his hand every tick, and doesn't blink like one about to go home
+    let mut carried = 0;
+    for _ in 0..3600 {
+        let world = &mut game.game.world;
+        let kruger = world
+            .soldiers
+            .values()
+            .find(|s| s.name == "Kruger" && !s.dead_meat)
+            .map(|s| s.particle.pos);
+        let flag = world
+            .things
+            .iter_mut()
+            .find(|t| t.active && t.kind == ThingKind::AlphaFlag && t.holding.is_none());
+        if let (Some(feet), Some(flag)) = (kruger, flag) {
+            let shift = feet - flag.skeleton.pos(1);
+            for i in 1..=flag.skeleton.len() {
+                *flag.skeleton.pos_mut(i) += shift;
+                *flag.skeleton.old_pos_mut(i) += shift;
+            }
+        }
+        game.step(&[]);
+
+        let Some(world) = game.client(alice).world.as_ref() else {
+            continue;
+        };
+        for flag in world.things.iter().filter(|t| t.active && t.kind.is_flag()) {
+            let Some(holder) = flag.holding.and_then(|h| world.soldiers.get(h)) else {
+                continue;
+            };
+            carried += 1;
+            assert_eq!(
+                flag.skeleton.pos(1),
+                holder.skeleton.pos(8),
+                "{}",
+                holder.name
+            );
+            assert!(flag.timeout >= 300, "{}: {}", holder.name, flag.timeout);
+        }
+    }
+    // (how long depends on how the bots' match goes)
+    assert!(carried > 200, "{carried} ticks carried");
+}
+
+#[test]
+fn a_carried_flag_waves_smoothly_for_its_carrier() {
+    let Some(mut game) = TestMatch::new("ctf_Ash", &[("sv_gamemode", "3")]) else {
+        return;
+    };
+    let mut bravo = hello("Alice");
+    if let ClientMessage::Hello { team, .. } = &mut bravo {
+        *team = Some(2);
+    }
+    let alice = game.join(bravo, Link::lossy(3, 0.0));
+    // Alice finds the alpha flag at her feet and walks off with it: on her client, ahead of
+    // the server, its cloth moves on as it did (no going back to where the server has it)
+    let mut cloth: Vec<Vec2> = Vec::new();
+    let mut worst: f32 = 0.0;
+    let mut carried = 0;
+    for _ in 0..1200 {
+        let world = &mut game.game.world;
+        let feet = world
+            .soldiers
+            .values()
+            .find(|s| s.name == "Alice" && !s.dead_meat && !s.is_spectator())
+            .map(|s| s.particle.pos);
+        let flag = world
+            .things
+            .iter_mut()
+            .find(|t| t.active && t.kind == ThingKind::AlphaFlag && t.holding.is_none());
+        if let (Some(feet), Some(flag)) = (feet, flag) {
+            let shift = feet - flag.skeleton.pos(1);
+            for i in 1..=flag.skeleton.len() {
+                *flag.skeleton.pos_mut(i) += shift;
+                *flag.skeleton.old_pos_mut(i) += shift;
+            }
+        }
+        game.step(&[Some(WALK)]);
+
+        let client = game.client(alice);
+        let (Some(world), Some(me)) = (client.world.as_ref(), client.net.own()) else {
+            continue;
+        };
+        let flag = world
+            .things
+            .iter()
+            .find(|t| t.active && t.kind == ThingKind::AlphaFlag && t.holding == Some(me));
+        match flag {
+            Some(flag) => {
+                carried += 1;
+                cloth.push(flag.skeleton.pos(3));
+            }
+            None => cloth.clear(),
+        }
+        if let [.., a, b, c] = cloth[..] {
+            worst = worst.max(((c - b) - (b - a)).length());
+        }
+    }
+    assert!(carried > 600, "{carried} ticks carried");
+    // (snapping back to the server's every snapshot jolts it by some 70)
+    assert!(worst < 30.0, "{worst} in a tick");
+}
+
+#[test]
+fn a_client_moves_its_things_itself() {
+    let Some(mut game) = TestMatch::new("ctf_Ash", &[("sv_gamemode", "3")]) else {
+        return;
+    };
+    let mut alpha = hello("Alice");
+    if let ClientMessage::Hello { team, .. } = &mut alpha {
+        *team = Some(1);
+    }
+    let alice = game.join(alpha, Link::perfect());
+    game.settle_steps(60);
+    let me = game.client(alice).net.own().unwrap();
+    let world = game.client_mut(alice).world.as_mut().unwrap();
+    let slot = world
+        .things
+        .iter()
+        .position(|t| t.active && t.kind == ThingKind::AlphaFlag)
+        .unwrap();
+    let here = ThingState::of(slot, &world.things[slot], |_| None);
+    let moved = |by: f32, holder: Option<PlayerNum>| {
+        let mut state = here.clone();
+        for p in state.points.iter_mut().chain(&mut state.old_points) {
+            p[0] += by;
+        }
+        state.holder = holder;
+        state
+    };
+    let at = |world: &World| world.things[slot].skeleton.pos(1);
+    let start = at(world);
+    let alice_num = |num: PlayerNum| (num == 1).then_some(me);
+
+    // like Soldat's: a little off stays, so does far off between thing snapshots
+    world.apply_things(&[moved(8.0, None)], true, alice_num);
+    assert_eq!(at(world), start);
+    world.apply_things(&[moved(50.0, None)], false, alice_num);
+    assert_eq!(at(world), start);
+    // far off in one: the server's
+    world.apply_things(&[moved(50.0, None)], true, alice_num);
+    assert_eq!(at(world), start + vec2(50.0, 0.0));
+    let old = world.things[slot].skeleton.old_pos(1);
+    assert_eq!(old, Vec2::from(here.old_points[0]) + vec2(50.0, 0.0));
+
+    // held: only when far from the holder
+    world.soldiers[me].particle.pos = at(world) + vec2(100.0, 0.0);
+    world.apply_things(&[moved(0.0, Some(1))], true, alice_num);
+    assert_eq!(at(world), start + vec2(50.0, 0.0));
+    assert_eq!(world.things[slot].holding, Some(me));
+    world.soldiers[me].particle.pos = at(world) + vec2(400.0, 0.0);
+    world.apply_things(&[moved(0.0, Some(1))], true, alice_num);
+    assert_eq!(at(world), start);
 }
 
 #[test]
@@ -676,4 +849,37 @@ fn snapshots_come_as_deltas() {
             "{who}: {bytes:?}"
         );
     }
+}
+
+#[test]
+fn a_team_game_waits_for_the_team_pick() {
+    let Some(mut game) = TestMatch::new("ctf_Ash", &[("sv_gamemode", "3")]) else {
+        return;
+    };
+    let things = |world: &World| world.things.iter().filter(|t| t.active).count();
+    let team_of = |game: &TestMatch| {
+        game.game
+            .world
+            .soldiers
+            .values()
+            .find(|s| s.name == "Alice")
+            .map(|s| s.team)
+    };
+    let before = things(&game.game.world);
+    let alice = game.join(hello("Alice"), Link::perfect());
+    game.settle_steps(30);
+    // watching, not playing, till the team menu's pick (like Soldat's)
+    assert_eq!(team_of(&game), None);
+
+    // the spectators first: nothing dropped, on the server or on her client
+    game.clients[alice].0.send(&ClientMessage::JoinTeam(5));
+    game.settle_steps(10);
+    assert_eq!(team_of(&game), Some(Team::Spectator));
+    assert_eq!(things(&game.game.world), before);
+    assert_eq!(things(game.client(alice).world.as_ref().unwrap()), before);
+
+    // then a team
+    game.clients[alice].0.send(&ClientMessage::JoinTeam(1));
+    game.settle_steps(10);
+    assert_eq!(team_of(&game), Some(Team::Alpha));
 }

@@ -11,6 +11,9 @@ use std::io::{self, Read, Write};
 /// A demo file starts with this.
 pub const DEMO_MAGIC: &[u8; 8] = b"SOLDANKD";
 
+/// Demo files end with this.
+pub const DEMO_EXTENSION: &str = "sdemo";
+
 /// What a demo was recorded on.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct DemoHeader {
@@ -345,8 +348,13 @@ mod tests {
             bonus: 0,
             bonus_time: 0,
             ping: 50,
+            ping_ticks: 3,
             stat: None,
             weapon_sel: 0x3ff,
+            position: 1,
+            look: 0,
+            respawn_counter: 0,
+            quality: 100,
         };
         let snapshot = |tick: u64| Snapshot {
             tick,
@@ -354,6 +362,8 @@ mod tests {
                 .map(|n| soldier(n, tick as f32 + f32::from(n)))
                 .collect(),
             things: Vec::new(),
+            thing_snapshot: true,
+            dead_snapshot: true,
             team_scores: [0; 6],
             time_left: 3600,
         };

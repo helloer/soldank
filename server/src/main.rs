@@ -2,14 +2,16 @@
 
 use anyhow::{Context, bail};
 use clap::Parser;
-use renet::{ConnectionConfig, RenetServer};
-use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
+use renet2::{ConnectionConfig, RenetServer};
+use renet2_netcode::{
+    BoxedSocket, NativeSocket, NetcodeServerTransport, ServerAuthentication, ServerSetupConfig,
+};
 use soldank_core::assets::Vfs;
 use soldank_core::config::{Console, Cvars};
 use soldank_core::net::{DEFAULT_PORT, PROTOCOL_ID, team_from_num};
 use soldank_core::*;
 use soldank_server::rcon::{Rcon, Request};
-use soldank_server::{MAX_PLAYERS, ServerGame, admin, log};
+use soldank_server::{MAX_PLAYERS, ServerGame, admin, log, web};
 use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,6 +29,11 @@ struct Cli {
     /// UDP address to listen on
     #[arg(long, default_value_t = SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)))]
     bind: SocketAddr,
+
+    /// port for browsers: WebTransport (UDP) and its certificate's hash (TCP) [default: the
+    /// game's port + 1; 0: none]
+    #[arg(long, value_name = "PORT")]
+    web_port: Option<u16>,
 
     /// asset directory or soldat.smod archive [default: ./assets or ./soldat.smod]
     #[arg(long, env = "SOLDANK_ASSETS")]
@@ -50,6 +57,9 @@ struct Cli {
     set: Vec<String>,
 }
 
+/// The game's UDP socket among the transport's sockets (the browsers' WebTransport is 1).
+const UDP_SOCKET: usize = 0;
+
 fn main() -> anyhow::Result<()> {
     // the console: the log, also for remote admins
     let (console_tx, console_lines) = std::sync::mpsc::channel();
@@ -70,22 +80,39 @@ fn main() -> anyhow::Result<()> {
     let admin_password = cvars.string("sv_adminpassword").to_string();
     let mut game = ServerGame::new(vfs, data, cvars, &cli.map).context("cannot load map")?;
     game.lists = admin::Lists::load(cli.config_dir.clone());
+    game.config_dir = cli.config_dir.clone();
     game.load_map_list();
     game.address = Some(cli.bind);
     game.game_mod = game_mod;
     if game.cvars.bool("log_enable") && game.cvars.int("log_level") > 0 {
         game.logs = Some(log::Logs::new(&cli.config_dir));
     }
-    let mut renet = RenetServer::new(ConnectionConfig::default());
+    let mut renet = RenetServer::new(ConnectionConfig::test());
+    // the game's socket (UDP), and the browsers' (WebTransport, on its runtime's threads)
     let socket = UdpSocket::bind(cli.bind).with_context(|| format!("cannot bind {}", cli.bind))?;
-    let config = ServerConfig {
+    let mut sockets = vec![BoxedSocket::new(NativeSocket::new(socket)?)];
+    let mut addresses = vec![vec![cli.bind]];
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let web_port = cli.web_port.unwrap_or(cli.bind.port().wrapping_add(1));
+    if web_port != 0 {
+        let addr = SocketAddr::new(cli.bind.ip(), web_port);
+        let socket = web::start(addr, MAX_PLAYERS, runtime.handle().clone())
+            .with_context(|| format!("cannot listen for browsers on {addr}"))?;
+        sockets.push(BoxedSocket::new(socket));
+        addresses.push(vec![addr]);
+        tracing::info!(%addr, "listening for browsers (WebTransport)");
+    }
+    let config = ServerSetupConfig {
         current_time: unix_time(),
         max_clients: MAX_PLAYERS,
         protocol_id: PROTOCOL_ID,
-        public_addresses: vec![cli.bind],
+        socket_addresses: addresses,
         authentication: ServerAuthentication::Unsecure,
     };
-    let mut transport = NetcodeServerTransport::new(config, socket)?;
+    let mut transport = NetcodeServerTransport::new_with_sockets(config, sockets)?;
     tracing::info!(addr = %cli.bind, map = game.map_name(), "listening");
 
     for bot in &cli.bots {
@@ -127,9 +154,16 @@ fn main() -> anyhow::Result<()> {
         let elapsed = now - last;
         last = now;
         renet.update(elapsed);
-        transport.update(elapsed, &mut renet)?;
+        if let Err(errors) = transport.update(elapsed, &mut renet) {
+            for error in errors {
+                tracing::debug!(%error, "network");
+            }
+        }
+        // (a browser's address is the WebTransport socket's own: none to ban or trust)
         game.receive(&mut renet, |id| {
-            transport.client_addr(id).map(|addr| addr.ip())
+            transport
+                .client_addr(id)
+                .and_then(|(socket, addr)| (socket == UDP_SOCKET).then_some(addr.ip()))
         });
         while let Ok(line) = stdin.try_recv() {
             game.command(&mut renet, None, &line);
@@ -143,6 +177,7 @@ fn main() -> anyhow::Result<()> {
                         if let Some(logs) = &mut game.logs {
                             logs.write();
                         }
+                        game.stop_recording(&mut renet);
                         transport.disconnect_all(&mut renet);
                         transport.send_packets(&mut renet);
                         return Ok(());
@@ -161,6 +196,14 @@ fn main() -> anyhow::Result<()> {
             if let Some(rcon) = &rcon {
                 rcon.broadcast(&line);
             }
+        }
+        if game.idle() {
+            // (connections still come and go)
+            transport.send_packets(&mut renet);
+            std::thread::sleep(Duration::from_millis(100));
+            last = Instant::now();
+            next = last + tick_time(&game);
+            continue;
         }
         game.tick(&mut renet);
         transport.send_packets(&mut renet);
@@ -230,7 +273,7 @@ fn mount_assets(cli: &Cli) -> anyhow::Result<Vfs> {
         ),
     };
     let mut vfs = Vfs::new();
-    vfs.mount(&base)
+    vfs.mount_game_files(&base)
         .with_context(|| format!("cannot mount assets from {}", base.display()))?;
     for path in &cli.mods {
         vfs.mount(path)

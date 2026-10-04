@@ -1,8 +1,9 @@
 //! The browser build (wasm32): the game's files come over HTTP before the menus open (next to
 //! the page: `soldat.smod` and the interface font), the log goes to the browser's console, sound
-//! goes through the page's Web Audio, and there's no playing on a server.
+//! goes through the page's Web Audio, and servers are played on over WebTransport.
 
 pub mod sound;
+pub mod webtransport;
 
 use super::*;
 use std::cell::RefCell;

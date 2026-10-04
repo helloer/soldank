@@ -25,6 +25,7 @@ pub mod colors {
     pub const CHAT: u32 = 0xEEEFFEEA;
     pub const TEAM_CHAT: u32 = 0xEEFEDA7C;
     pub const SERVER: u32 = 0xF9FBDA22;
+    pub const CLIENT: u32 = 0xF9FCD822;
     pub const MODE: u32 = 0xEE81DA41;
     pub const VOTE: u32 = 0xEEDDEE99;
     pub const ABOVE_CHAT: u32 = 0xFDFDF9;

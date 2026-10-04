@@ -2,7 +2,7 @@
 //! `main.rs` drives it with renet's UDP transport; the tests drive it with renet's in-memory
 //! clients.
 
-use renet::{ClientId, RenetServer, ServerEvent};
+use renet2::{ClientId, RenetServer, ServerEvent};
 use soldank_core::assets::Vfs;
 use soldank_core::config::{CvarFlags, Cvars};
 use soldank_core::net::*;
@@ -12,10 +12,12 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 pub mod admin;
+mod demo;
 mod guard;
 pub mod log;
 pub mod rcon;
 mod vote;
+pub mod web;
 
 /// Players at most (`MAX_PLAYERS`).
 pub const MAX_PLAYERS: usize = 32;
@@ -49,6 +51,8 @@ struct Client {
     ip: Option<IpAddr>,
     warnings: guard::Warnings,
     moves: guard::Moves,
+    /// The server's own demo recorder: it watches (no soldier), and nobody sees it.
+    demo: bool,
 }
 
 /// What the server checks a client's bullets against (`BulletTime`, `BulletWarningCount`,
@@ -112,6 +116,17 @@ pub struct ServerGame {
     tk_list: HashMap<String, u32>,
     /// Moves put back so far (`sv_movecheck`).
     corrections: u64,
+    /// When the things' points last went out (`ServerThingSnapshot`), and the dead's
+    /// respawn counters (`ServerSkeletonSnapshot`).
+    thing_snapshot_tick: Option<u64>,
+    dead_snapshot_tick: Option<u64>,
+    /// The cvars' generation the match has, and the synced ones clients have.
+    cvars_seen: u64,
+    cvars_sent: Vec<(String, String)>,
+    /// Where `demos/` is (the config directory).
+    pub config_dir: std::path::PathBuf,
+    /// Recording a demo (`record`, `demo_autorecord`).
+    recorder: Option<demo::Recorder>,
 }
 
 impl ServerGame {
@@ -147,8 +162,16 @@ impl ServerGame {
             tk_warnings: HashMap::new(),
             tk_list: HashMap::new(),
             corrections: 0,
+            thing_snapshot_tick: None,
+            dead_snapshot_tick: None,
+            cvars_seen: 0,
+            cvars_sent: Vec::new(),
+            config_dir: std::path::PathBuf::from("."),
+            recorder: None,
         };
         game.load_map_list();
+        game.cvars_seen = game.cvars.generation();
+        game.cvars_sent = game.synced_cvars();
         Ok(game)
     }
 
@@ -169,6 +192,40 @@ impl ServerGame {
             self.players.contains_key(n) || self.clients.values().any(|c| c.num == Some(*n))
         };
         (1..=MAX_PLAYERS as PlayerNum).find(|n| !taken(n))
+    }
+
+    /// `sv_pauseonidle`: no human is here (bots and the demo recorder don't count), the
+    /// match waits.
+    pub fn idle(&self) -> bool {
+        self.cvars.bool("sv_pauseonidle")
+            && !self.clients.values().any(|c| c.num.is_some() && !c.demo)
+    }
+
+    /// Cvars that changed: the match plays by them now, and so do the clients (the synced
+    /// ones, `ServerSyncCvars`; also those still getting the map, who had the old ones).
+    fn sync_cvars(&mut self, renet: &mut RenetServer) {
+        if self.cvars.generation() == self.cvars_seen {
+            return;
+        }
+        self.cvars_seen = self.cvars.generation();
+        self.world
+            .set_rules(WorldConfig::from_cvars(&self.cvars, &self.data));
+        let synced = self.synced_cvars();
+        let changed: Vec<(String, String)> = synced
+            .iter()
+            .filter(|cvar| !self.cvars_sent.contains(cvar))
+            .cloned()
+            .collect();
+        self.cvars_sent = synced;
+        if changed.is_empty() {
+            return;
+        }
+        let bytes = encode(&ServerMessage::Cvars(changed));
+        for (id, client) in &self.clients {
+            if client.num.is_some() && client.refused_until.is_none() {
+                renet.send_message(*id, channel::RELIABLE, bytes.clone());
+            }
+        }
     }
 
     /// Server cvars clients play by (`CVAR_SYNC`).
@@ -238,8 +295,10 @@ impl ServerGame {
         while let Some(event) = renet.get_event() {
             match event {
                 ServerEvent::ClientConnected { client_id } => {
+                    let demo = self.recorder.as_ref().is_some_and(|r| r.id == client_id);
                     let client = Client {
-                        ip: addr(client_id),
+                        ip: addr(client_id).filter(|_| !demo),
+                        demo,
                         ..Client::default()
                     };
                     self.clients.insert(client_id, client);
@@ -409,6 +468,23 @@ impl ServerGame {
                 self.download(renet, client_id, request);
             }
             (ClientMessage::JoinTeam(team), Some(id)) => self.join_team(renet, id, team, false),
+            // the team menu's first pick: the player joins with it
+            (ClientMessage::JoinTeam(team), None) if num.is_some() => {
+                let ready = self
+                    .clients
+                    .get(&client_id)
+                    .is_some_and(|c| c.ready && c.hello.is_some());
+                if let (true, Some(num)) = (ready, num) {
+                    let team = self.fix_team(team);
+                    match self.team_refusal(Team::Spectator, team) {
+                        Some(text) => {
+                            let text = ServerMessage::ServerText(text);
+                            Self::send(renet, client_id, channel::RELIABLE, &text);
+                        }
+                        None => self.spawn_player(renet, client_id, num, team),
+                    }
+                }
+            }
             (ClientMessage::Loadout { primary, secondary }, Some(id)) => {
                 let weapons = self.world.config.weapons.clone();
                 if let Some(soldier) = self.world.soldiers.get_mut(id) {
@@ -436,12 +512,16 @@ impl ServerGame {
                     }
                 }
             }
-            (ClientMessage::Control(control), Some(_)) => {
+            (ClientMessage::Control(control), soldier) => {
                 // a snapshot the server still has, newer than the one it had
                 let acked = self.snapshots.iter().any(|s| s.tick == control.snapshot);
                 if let Some(client) = self.clients.get_mut(&client_id).filter(|c| c.ready) {
                     if acked && client.acked.is_none_or(|tick| control.snapshot > tick) {
                         client.acked = Some(control.snapshot);
+                    }
+                    // (picking a team, watching: the snapshot it has, nothing to control)
+                    if soldier.is_none() {
+                        return;
                     }
                     let newer = client
                         .control
@@ -452,27 +532,40 @@ impl ServerGame {
                     }
                 }
             }
-            (ClientMessage::Chat { text, team }, Some(id)) => {
+            (ClientMessage::Chat { text, team, radio }, Some(id)) => {
                 let Some(from) = num else { return };
                 if !self.watch_chat(renet, client_id, from, &text) {
                     return;
                 }
+                // the radio menu's two digits, 1 to 3 each; for the team, like team chat
+                let radio =
+                    radio.filter(|r| (1..=3).contains(&(r / 10)) && (1..=3).contains(&(r % 10)));
+                let team = team || radio.is_some();
                 let sender_team = self.world.soldiers.get(id).map(|s| s.team);
                 let muted = self.is_muted(client_id);
                 let line = format!(
                     "{}{}[{}] {text}",
-                    if team { "(TEAM) " } else { "" },
+                    match (radio, team) {
+                        (Some(_), _) => "(RADIO) ",
+                        (None, true) => "(TEAM) ",
+                        (None, false) => "",
+                    },
                     if muted { "(MUTED) " } else { "" },
                     self.name_of(from)
                 );
                 tracing::info!("{line}");
                 // a muted player's chat reaches everyone as "(Muted)"
-                let (text, team) = if muted {
-                    ("(Muted)".to_string(), false)
+                let (text, team, radio) = if muted {
+                    ("(Muted)".to_string(), false, None)
                 } else {
-                    (text, team)
+                    (text, team, radio)
                 };
-                let message = encode(&ServerMessage::Chat { from, text, team });
+                let message = encode(&ServerMessage::Chat {
+                    from,
+                    text,
+                    team,
+                    radio,
+                });
                 for other in self.joined().collect::<Vec<_>>() {
                     let other_team = self.clients[&other]
                         .num
@@ -761,7 +854,32 @@ impl ServerGame {
             }
             return;
         }
-        let Some((name, looks, team)) = self.clients[&client_id].hello.clone() else {
+        // the demo recorder only watches
+        if self.clients[&client_id].demo {
+            return;
+        }
+        let Some((_, _, team)) = self.clients[&client_id].hello.clone() else {
+            return;
+        };
+        // a team game without a team: the player picks one from the team menu first (Soldat's
+        // client sends its player info then), watching meanwhile
+        let team = match team {
+            Some(team) => self.fix_team(team),
+            None if self.world.config.game_mode.is_team_game() => return,
+            None => Team::None as u8,
+        };
+        self.spawn_player(renet, client_id, num, team);
+    }
+
+    /// The client's player joins the match in `team` (`ServerHandlePlayerInfo`).
+    fn spawn_player(
+        &mut self,
+        renet: &mut RenetServer,
+        client_id: ClientId,
+        num: PlayerNum,
+        team: u8,
+    ) {
+        let Some((name, looks, _)) = self.clients[&client_id].hello.clone() else {
             return;
         };
         let id = self.world.spawn_soldier();
@@ -780,14 +898,21 @@ impl ServerGame {
             client.vote_cooldown = cooldown;
         }
 
-        // a team game without a team: watch until one is picked
-        let team_game = self.world.config.game_mode.is_team_game();
-        let team = match team {
-            Some(t) => self.fix_team(t),
-            None if team_game => Team::Spectator as u8,
-            None => Team::None as u8,
-        };
         self.join_team(renet, id, team, true);
+        // its spawn now, for everyone (and its positions count from here: none from before)
+        if let Some(soldier) = self.world.soldiers.get(id) {
+            let (alive, pos) = (!soldier.dead_meat, soldier.particle.pos);
+            self.dead.insert(id, !alive);
+            if alive {
+                let respawned = ServerMessage::Respawned {
+                    num,
+                    pos: pos.into(),
+                };
+                self.broadcast(renet, channel::RELIABLE, &respawned);
+                self.new_weapon(num);
+                self.position_reset(num, pos);
+            }
+        }
         let team = self.world.soldiers.get(id).map_or(0, |s| s.team as u8);
         self.balance_bots(renet, false, team);
 
@@ -851,24 +976,52 @@ impl ServerGame {
     /// The match now, to each client as what changed since the newest snapshot it has (whole
     /// if the server no longer has that one).
     fn send_snapshots(&mut self, renet: &mut RenetServer) {
+        // the dead's respawn counters only every so often (`ServerSkeletonSnapshot`)
+        let dead_snapshot = self.dead_snapshot_due();
+        let last = self.snapshots.back();
         let mut soldiers: Vec<SoldierState> = self
             .players
             .iter()
             .filter_map(|(num, id)| Some(SoldierState::of(*num, self.world.soldiers.get(*id)?)))
+            .map(|mut state| {
+                let was = last.and_then(|s| s.soldiers.iter().find(|o| o.num == state.num));
+                if let Some(was) = was.filter(|_| !dead_snapshot) {
+                    state.respawn_counter = was.respawn_counter;
+                }
+                state
+            })
             .collect();
         soldiers.sort_by_key(|s| s.num);
+        // the things' points only every so often, but a new thing's (parachutes are the
+        // clients' own)
+        let thing_snapshot = self.thing_snapshot_due();
+        let last = self.snapshots.back();
         let things = self
             .world
             .things
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.active)
-            .map(|(slot, t)| ThingState::of(slot, t, |id| self.num_of(id)))
+            .filter(|(_, t)| t.active && t.kind != ThingKind::Parachute)
+            .map(|(slot, t)| {
+                let mut state = ThingState::of(slot, t, |id| self.num_of(id));
+                let was = last.and_then(|s| {
+                    s.things
+                        .iter()
+                        .find(|o| o.slot == state.slot && o.kind == state.kind)
+                });
+                if let Some(was) = was.filter(|_| !thing_snapshot) {
+                    state.points.clone_from(&was.points);
+                    state.old_points.clone_from(&was.old_points);
+                }
+                state
+            })
             .collect();
         let snapshot = Snapshot {
             tick: self.uptime,
             soldiers,
             things,
+            thing_snapshot,
+            dead_snapshot,
             team_scores: self.world.game.team_scores,
             time_left: self.world.game.time_left,
         };
@@ -893,6 +1046,54 @@ impl ServerGame {
             self.snapshots.pop_front();
         }
         self.snapshots.push_back(snapshot);
+    }
+
+    /// Whether the things' points go out (`ServerThingSnapshot`): every `net_t1_thingsnapshot`
+    /// ticks (12 on a LAN), sooner with fewer players in the match.
+    fn thing_snapshot_due(&mut self) -> bool {
+        let every = self.send_every("net_t1_thingsnapshot", 12);
+        let due = self
+            .thing_snapshot_tick
+            .is_none_or(|last| self.uptime >= last + every);
+        if due {
+            self.thing_snapshot_tick = Some(self.uptime);
+        }
+        due
+    }
+
+    /// Whether the dead's respawn counters go out (`ServerSkeletonSnapshot`): every
+    /// `net_t1_deadsnapshot` ticks (20 on a LAN), sooner with fewer players in the match.
+    fn dead_snapshot_due(&mut self) -> bool {
+        let every = self.send_every("net_t1_deadsnapshot", 20);
+        let due = self
+            .dead_snapshot_tick
+            .is_none_or(|last| self.uptime >= last + every);
+        if due {
+            self.dead_snapshot_tick = Some(self.uptime);
+        }
+        due
+    }
+
+    /// Ticks between sends of a kind: the `net_t1_*` cvar's (`lan` on a LAN), times
+    /// `Adjust` (fewer players in the match, more often).
+    fn send_every(&self, cvar: &str, lan: i64) -> u64 {
+        let playing = self
+            .world
+            .soldiers
+            .values()
+            .filter(|s| s.active && !s.is_spectator())
+            .count();
+        let adjust = match playing {
+            0..5 => 0.66,
+            5..9 => 0.75,
+            _ => 1.0,
+        };
+        let ticks = if self.cvars.int("net_lan") == 1 {
+            lan
+        } else {
+            self.cvars.int(cvar)
+        };
+        (ticks as f32 * adjust).round().max(1.0) as u64
     }
 
     /// Downloads go on: a few pieces per client per tick.
@@ -932,31 +1133,9 @@ impl ServerGame {
         if team > Team::Spectator as u8 {
             return;
         }
-        let mut playing = [0usize; 6];
-        for s in self.world.soldiers.values().filter(|s| !s.is_spectator()) {
-            playing[s.team as usize] += 1;
-        }
-        // (Soldat counts only who's playing, so its limit never counts the spectators)
-        let spectators = self
-            .world
-            .soldiers
-            .values()
-            .filter(|s| s.is_spectator())
-            .count();
-        let mut refusal = None;
-        if !admin && mode.is_team_game() && self.cvars.bool("sv_balanceteams") {
-            // uneven teams: a spectator may join the smallest, others one smaller than theirs
-            let lowest = lowest_team(&playing, mode);
-            let to_lowest = soldier.is_spectator() && usize::from(team) == lowest;
-            let current = soldier.team as usize;
-            if !to_lowest && team < 5 && playing[usize::from(team)] >= playing[current] {
-                let name = ["Alpha", "Bravo", "Charlie", "Delta"][usize::from(team.max(1)) - 1];
-                refusal = Some(format!("{name} team is full"));
-            }
-        }
-        if !admin && team == 5 && spectators >= self.cvars.int("sv_maxspectators") as usize {
-            refusal = Some("Spectators are full".to_string());
-        }
+        let refusal = (!admin)
+            .then(|| self.team_refusal(soldier.team, team))
+            .flatten();
         // a mode's teams only (`FixTeam` does this for joining players)
         let fits = match team {
             0 => !mode.is_team_game(),
@@ -978,10 +1157,51 @@ impl ServerGame {
         if !admin && !fits {
             return;
         }
+        self.change_team(renet, id, num, team);
+    }
 
+    /// Why a player in `current` (the spectators while still picking) can't join `team`, if
+    /// it can't: `sv_balanceteams`, `sv_maxspectators`.
+    fn team_refusal(&self, current: Team, team: u8) -> Option<String> {
+        let mode = self.world.config.game_mode;
+        let mut playing = [0usize; 6];
+        for s in self.world.soldiers.values().filter(|s| !s.is_spectator()) {
+            playing[s.team as usize] += 1;
+        }
+        // (Soldat counts only who's playing, so its limit never counts the spectators)
+        let spectators = self
+            .world
+            .soldiers
+            .values()
+            .filter(|s| s.is_spectator())
+            .count();
+        let mut refusal = None;
+        if mode.is_team_game() && self.cvars.bool("sv_balanceteams") {
+            // uneven teams: a spectator may join the smallest, others one smaller than theirs
+            let lowest = lowest_team(&playing, mode);
+            let to_lowest = current == Team::Spectator && usize::from(team) == lowest;
+            let current = current as usize;
+            if !to_lowest && team < 5 && playing[usize::from(team)] >= playing[current] {
+                let name = ["Alpha", "Bravo", "Charlie", "Delta"][usize::from(team.max(1)) - 1];
+                refusal = Some(format!("{name} team is full"));
+            }
+        }
+        if team == 5 && spectators >= self.cvars.int("sv_maxspectators") as usize {
+            refusal = Some("Spectators are full".to_string());
+        }
+        refusal
+    }
+
+    /// The player goes to `team` (`TSprite.ChangeTeam`), and everyone hears of it.
+    fn change_team(&mut self, renet: &mut RenetServer, id: SoldierId, num: PlayerNum, team: u8) {
         let team = team_from_num(team);
         let mut respawned_alive = None;
-        if team == Team::Spectator {
+        // (a soldier the ticks haven't seen yet is a joining player's, or one come along to a
+        // new map)
+        let new = !self.dead.contains_key(&id);
+        if team == Team::Spectator && new {
+            self.world.add_spectator(id);
+        } else if team == Team::Spectator {
             self.world.join_spectators(id);
         } else {
             let config = self.world.config.clone();
@@ -996,6 +1216,7 @@ impl ServerGame {
         let name = &self.world.soldiers[id].name;
         match team {
             Team::None => tracing::info!("{name} has joined the game."),
+            Team::Spectator if new => tracing::info!("{name} has joined as spectator."),
             Team::Spectator => tracing::info!("{name} has joined spectators."),
             team => tracing::info!(
                 "{name} has joined {} team.",
@@ -1049,6 +1270,11 @@ impl ServerGame {
         }
         self.guard_timers();
         self.ban_timer();
+        self.sync_cvars(renet);
+        // the first map's demo
+        if now == 1 {
+            self.auto_record(renet);
+        }
         // nobody left to wait for
         if self.world.game.paused() && !self.clients.values().any(|c| c.ready) {
             self.world.game.unpause();
@@ -1090,7 +1316,13 @@ impl ServerGame {
                     guard::Move::PutBack => put_back.push((*client_id, id)),
                 }
             }
-            inputs.push((id, control.input()));
+            let mut input = control.input();
+            if let Some(soldier) = self.world.soldiers.get(id) {
+                // prone toggles while the client's position differs (its buttons don't say)
+                let toggle = (control.position == POS_PRONE) != (soldier.position == POS_PRONE);
+                input.buttons.set(Buttons::PRONE, toggle);
+            }
+            inputs.push((id, input));
         }
         for (client_id, id) in put_back {
             self.put_back(renet, client_id, id);
@@ -1129,16 +1361,28 @@ impl ServerGame {
 
         let tick = self.world.tick;
         if tick.is_multiple_of(SNAPSHOT_TICKS) {
-            // RealPing
+            // the pings: renet's round trip runs from the tick a packet left to the tick its
+            // answer is read, like Soldat's pongs (`PingTicks`), so it's a tick even on the
+            // same machine. Without that tick it's about the network's, which Soldat shows
+            // (`RealPing`, GameNetworkingSockets' ping).
+            let tick_time = 1.0 / f64::from(self.world.goal_ticks());
             for (client_id, client) in &self.clients {
                 let soldier = client.num.and_then(|n| self.players.get(&n));
                 if let Some(soldier) = soldier.and_then(|id| self.world.soldiers.get_mut(*id)) {
-                    soldier.ping = (renet.rtt(*client_id) * 1000.0).round().min(9999.0) as u16;
+                    let rtt = renet.rtt(*client_id);
+                    soldier.ping_ticks = (rtt / tick_time).round().min(255.0) as u8;
+                    // the packets that came (GameNetworkingSockets' `ConnectionQualityLocal`)
+                    let loss = renet
+                        .network_info(*client_id)
+                        .map_or(1.0, |n| n.packet_loss);
+                    soldier.connection_quality = ((1.0 - loss) * 100.0).clamp(0.0, 100.0) as u8;
+                    soldier.ping = ((rtt - tick_time).max(0.0) * 1000.0).round().min(9999.0) as u16;
                 }
             }
             self.send_snapshots(renet);
         }
         self.send_downloads(renet);
+        self.record(renet);
 
         if events.contains(&GameEvent::ChangeMap) {
             self.next_map(renet);
@@ -1154,11 +1398,15 @@ impl ServerGame {
                     how,
                     weapon,
                     headshot,
+                    hit,
+                    shot,
                 } => {
                     self.log_kill(killer, victim, weapon);
-                    let (Some(victim_num), Some(killer_num)) =
-                        (self.num_of(victim), self.num_of(killer))
-                    else {
+                    let (Some(victim_num), Some(killer_num), Some(body)) = (
+                        self.num_of(victim),
+                        self.num_of(killer),
+                        self.world.soldiers.get(victim),
+                    ) else {
                         continue;
                     };
                     let message = ServerMessage::Killed {
@@ -1167,6 +1415,7 @@ impl ServerGame {
                         how: death_num(how),
                         weapon: weapon.map(weapon_index),
                         headshot,
+                        death: DeathState::of(body, hit, shot),
                     };
                     self.broadcast(renet, channel::RELIABLE, &message);
                     self.punish_team_kill(renet, victim, killer);
@@ -1180,6 +1429,7 @@ impl ServerGame {
                         from,
                         text: text.clone(),
                         team: false,
+                        radio: None,
                     }
                 }
                 GameEvent::IdleAnimation { who, style } => {
@@ -1188,13 +1438,18 @@ impl ServerGame {
                     };
                     ServerMessage::IdleAnimation { num, style }
                 }
-                GameEvent::ThingTaken { kind, who, pos } => {
+                GameEvent::ThingTaken {
+                    slot,
+                    kind,
+                    who,
+                    pos,
+                } => {
                     let Some(by) = self.num_of(who) else { continue };
                     if kind.is_gun() {
                         self.new_weapon(by);
                     }
                     ServerMessage::ThingTaken {
-                        slot: 0,
+                        slot: slot as u8,
                         kind: kind as u8,
                         by,
                         pos: pos.into(),
@@ -1294,6 +1549,10 @@ impl ServerGame {
 
     pub fn change_map(&mut self, renet: &mut RenetServer, name: &str) -> anyhow::Result<()> {
         let world = new_world(&self.vfs, &self.data, &self.cvars, name)?;
+        // an automatic demo ends with its map (another one starts with the next)
+        if self.recorder.as_ref().is_some_and(|r| r.auto) {
+            self.stop_recording(renet);
+        }
         let old = std::mem::replace(&mut self.world, world);
         // the old map's snapshots: nobody starts from them
         self.snapshots.clear();
@@ -1352,7 +1611,77 @@ impl ServerGame {
                 tracing::warn!(%error, name, "bot");
             }
         }
+        self.auto_record(renet);
         Ok(())
+    }
+
+    /// `demo_autorecord`: a demo of each map, from its start.
+    fn auto_record(&mut self, renet: &mut RenetServer) {
+        if self.cvars.bool("demo_autorecord") && self.recorder.is_none() {
+            self.start_recording(renet, None, true);
+        }
+    }
+
+    /// `record [name]`: a demo from now on (`demos/<date>_<map>` by default), over the one
+    /// being recorded.
+    pub fn start_recording(&mut self, renet: &mut RenetServer, name: Option<&str>, auto: bool) {
+        self.stop_recording(renet);
+        let name = match name {
+            Some(name) if !name.contains(['/', '\\']) && !name.contains("..") => name.to_string(),
+            Some(_) => return,
+            None => format!(
+                "{}{}",
+                chrono::Local::now().format("%Y-%m-%d_%H-%M-%S_"),
+                self.map_name()
+            ),
+        };
+        // an id no netcode client is likely to have
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        let id = (1 << 63) | (nanos ^ self.uptime.rotate_left(32));
+        let password = self.cvars.string("sv_password").to_string();
+        let mod_hash = self
+            .game_mod
+            .as_ref()
+            .map_or(0, |(game_mod, _)| game_mod.hash);
+        let recorder = demo::Recorder::start(
+            renet,
+            id,
+            &self.config_dir,
+            &name,
+            auto,
+            &password,
+            mod_hash,
+        );
+        tracing::info!("Recording demo: {}", recorder.name);
+        self.recorder = Some(recorder);
+    }
+
+    /// `stop`: the demo being recorded ends.
+    pub fn stop_recording(&mut self, renet: &mut RenetServer) {
+        let Some(recorder) = self.recorder.take() else {
+            return;
+        };
+        let name = recorder.name.clone();
+        let id = recorder.id;
+        if let Err(error) = recorder.stop(renet) {
+            tracing::warn!(%error, name, "demo");
+        }
+        self.leave(renet, id);
+        tracing::info!("Demo stopped ({name})");
+    }
+
+    /// The recorder hears this tick's messages.
+    fn record(&mut self, renet: &mut RenetServer) {
+        let elapsed = std::time::Duration::from_secs_f64(1.0 / f64::from(self.world.goal_ticks()));
+        let Some(recorder) = &mut self.recorder else {
+            return;
+        };
+        if let Err(error) = recorder.tick(renet, elapsed) {
+            tracing::warn!(%error, name = recorder.name, "demo");
+            self.stop_recording(renet);
+        }
     }
 }
 

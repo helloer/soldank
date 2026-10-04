@@ -139,7 +139,7 @@ fn demo_entries(config_dir: &Path) -> Vec<DemoEntry> {
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
-            (path.extension()? == crate::demo::DEMO_EXTENSION).then_some(())?;
+            (path.extension()? == soldank_core::demo::DEMO_EXTENSION).then_some(())?;
             let file = std::fs::File::open(&path).ok()?;
             let size = file.metadata().ok()?.len();
             let header =
@@ -636,10 +636,6 @@ impl FrontEnd {
     fn join(&mut self, ui: &mut egui::Ui, config_dir: &Path) {
         ui.heading("Join a server");
         ui.add_space(6.0);
-        if self.web {
-            ui.label("Online play is in the desktop version of the game.");
-            return;
-        }
         let mut connect = None;
         Grid::new("join")
             .num_columns(2)
@@ -662,6 +658,14 @@ impl FrontEnd {
             });
         ui.add_space(8.0);
         let address = self.address.trim().to_string();
+        if self.web {
+            // (browsers reach a server over WebTransport, on the port after the game's)
+            ui.label(
+                RichText::new("In the browser, servers are joined over WebTransport.")
+                    .small()
+                    .color(DIM),
+            );
+        }
         ui.horizontal(|ui| {
             let button = theme::primary("Connect", 22.0).min_size(vec2(160.0, 44.0));
             if ui.add_enabled(!address.is_empty(), button).clicked() {

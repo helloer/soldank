@@ -507,10 +507,24 @@ fn render_frags_menu(hud: &mut Hud, state: &HudState) {
             let pos = vec2(x + 337.0, sy - 1.0);
             hud.draw(Interface::Flag, pos, 1.0, icon_alpha, (0.0, 1.0));
         }
-        if soldier.brain.is_some() {
+        if soldier.muted || state.messages.mute_all {
+            let pos = vec2(x + 246.0, sy - 1.0);
+            hud.draw(Interface::Mute, pos, 1.0, icon_alpha, (0.0, 1.0));
+        }
+        if soldier.is_bot() {
             let pos = vec2(x + 534.0, sy);
             hud.draw(Interface::Bot, pos, 1.0, icon_alpha, (0.0, 1.0));
         }
+        // the connection: red to green by the packets that come through
+        let quality = u32::from(soldier.connection_quality.min(100));
+        let connection = rgba(
+            (255 * (100 - quality) / 100) as u8,
+            (255 * quality / 100) as u8,
+            0,
+            state.alpha,
+        );
+        let pos = vec2(x + 520.0, sy + 2.0);
+        hud.draw(Interface::Connection, pos, 1.0, connection, (0.0, 1.0));
 
         let color = if spectator {
             rgba(220, 50, 200, 113)
@@ -534,7 +548,7 @@ fn render_frags_menu(hud: &mut Hud, state: &HudState) {
             let flags = format!("x{}", soldier.flags);
             hud.text(FontStyle::Small, &flags, vec2(x + 348.0, py), color);
         }
-        if soldier.brain.is_none() {
+        if !soldier.is_bot() {
             let ping = soldier.ping.to_string();
             hud.text(FontStyle::Small, &ping, vec2(x + 534.0, py), color);
         }

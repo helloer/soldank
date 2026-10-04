@@ -19,6 +19,7 @@ impl Game {
                 connection.send(&soldank_core::net::ClientMessage::Chat {
                     text: text.to_string(),
                     team,
+                    radio: None,
                 });
             }
             return;
@@ -82,6 +83,42 @@ impl Game {
         for command in self.console.take_deferred() {
             match (command.name.as_str(), command.args.as_slice()) {
                 ("quit", _) => window::request_quit(),
+                ("connect", args) => match join_address(args) {
+                    Some((address, password)) => {
+                        self.join = Some(Some(app::Session::Join { address, password }));
+                    }
+                    None => self.console.print("Usage: connect ip port password"),
+                },
+                ("joinurl", [url]) => match join_url(url) {
+                    Some((address, password)) => {
+                        self.join = Some(Some(app::Session::Join { address, password }));
+                    }
+                    None => self
+                        .console
+                        .print("Usage: joinurl soldat://ip:port/password"),
+                },
+                ("retry", _) => self.join = Some(None),
+                // (`ExitToMenu`)
+                ("disconnect" | "shutdown", _) => self.to_menu = true,
+                ("mute", [target]) if target == "all" => {
+                    let all = !self.hud.messages.mute_all;
+                    self.hud.messages.mute_all = all;
+                    let text = if all {
+                        "Everyone is muted"
+                    } else {
+                        "Everyone is unmuted"
+                    };
+                    self.message(text, console_colors::CLIENT);
+                }
+                (mute @ ("mute" | "unmute"), [target]) => {
+                    let muted = mute == "mute";
+                    for id in self.command_targets(target) {
+                        let soldier = &mut self.world.soldiers[id];
+                        soldier.muted = muted;
+                        let text = format!("{} is {mute}d", soldier.name);
+                        self.message(text, console_colors::CLIENT);
+                    }
+                }
                 ("map", [name]) => self.change_map(name),
                 ("record", args) => self.start_recording(args.first().map(String::as_str), false),
                 ("stop", _) => self.stop_recording(),
@@ -128,6 +165,26 @@ impl Game {
                     self.screenshot = Some(path);
                     let listener = self.listener();
                     self.audio.play_here(Sfx::Snapshot, listener.pos);
+                    // (the shown action snap is what's kept)
+                    if self.action_snap.show {
+                        self.action_snap.close_after_shot = true;
+                    }
+                }
+                ("snap", _) => {
+                    let snap = &mut self.action_snap;
+                    let offered = snap.counter.is_some() && snap.image.is_some();
+                    if self.console.cvars.bool("cl_actionsnap") && offered {
+                        snap.show = !snap.show;
+                        if snap.show {
+                            let listener = self.listener();
+                            self.audio.play_here(Sfx::Snapshot, listener.pos);
+                        } else {
+                            snap.counter = None;
+                        }
+                    } else {
+                        snap.counter = None;
+                        snap.show = false;
+                    }
                 }
                 ("playername", _) => self.hud.menus.player_names = !self.hud.menus.player_names,
                 ("sniperline", _) => {
@@ -143,9 +200,11 @@ impl Game {
                     }
                 }
                 ("radio", _) => {
-                    let ok = !self.chat.active()
-                        && self.console.cvars.bool("sv_radio")
-                        && self.player.is_some();
+                    let playing = self
+                        .player
+                        .and_then(|id| self.world.soldiers.get(id))
+                        .is_some_and(|s| !s.is_spectator());
+                    let ok = !self.chat.active() && self.console.cvars.bool("sv_radio") && playing;
                     if ok {
                         self.hud.radio = match self.hud.radio {
                             Some(_) => None,
@@ -248,7 +307,23 @@ impl Game {
                     self.console
                         .print("the dev overlay needs soldank built with --features dev");
                 }
-                ("chat", _) => self.start_chat(ChatKind::Public),
+                ("chat", _) => {
+                    // survival: a spectator talks to the spectators till the round's over
+                    let spectating = self
+                        .player
+                        .and_then(|id| self.world.soldiers.get(id))
+                        .is_some_and(|s| s.is_spectator());
+                    let cvars = &self.console.cvars;
+                    let antispy = cvars.bool("sv_survivalmode")
+                        && spectating
+                        && !self.world.game.survival_end_round
+                        && cvars.bool("sv_survivalmode_antispy");
+                    self.start_chat(if antispy {
+                        ChatKind::Team
+                    } else {
+                        ChatKind::Public
+                    });
+                }
                 ("teamchat", _) => self.start_chat(ChatKind::Team),
                 ("cmd", _) => self.start_chat(ChatKind::Command),
                 (name, []) if PlayerCommand::from_name(name).is_some() => {
@@ -280,5 +355,113 @@ impl Game {
         }
 
         self.flush_console();
+    }
+}
+
+/// `connect ip [port] [password]`'s server (port 23073 by default, or in the address) and
+/// password.
+fn join_address(args: &[String]) -> Option<(String, String)> {
+    let ip = args.first()?;
+    let address = match args.get(1) {
+        Some(port) => format!("{ip}:{port}"),
+        None => ip.clone(),
+    };
+    let password = args.get(2).cloned().unwrap_or_default();
+    Some((address, password))
+}
+
+/// `joinurl soldat://ip:port/password`'s server and password.
+fn join_url(url: &str) -> Option<(String, String)> {
+    let rest = url.split("//").nth(1)?;
+    let (address, password) = rest.split_once('/').unwrap_or((rest, ""));
+    if address.is_empty() {
+        return None;
+    }
+    Some((address.to_string(), password.to_string()))
+}
+
+impl Game {
+    /// `CommandTarget`: the soldiers `target` names: a player number or an exact name, or a
+    /// group (`@all`, `@bots`, `@humans`, `@alive`, `@dead`, `@me`, `@!me`, `@none`,
+    /// `@alpha`, `@bravo`, `@charlie`, `@delta`, `@spec`).
+    pub(crate) fn command_targets(&self, target: &str) -> Vec<SoldierId> {
+        let soldiers: Vec<(usize, SoldierId)> = match &self.connection {
+            Some(connection) => connection
+                .net
+                .players
+                .iter()
+                .map(|(num, id)| (usize::from(*num), *id))
+                .collect(),
+            None => self
+                .world
+                .soldiers
+                .keys()
+                .enumerate()
+                .map(|(i, id)| (i + 1, id))
+                .collect(),
+        };
+        let soldiers: Vec<(usize, SoldierId)> = soldiers
+            .into_iter()
+            .filter(|(_, id)| self.world.soldiers.get(*id).is_some_and(|s| s.active))
+            .collect();
+        let by_number = target.parse::<usize>().ok().filter(|&n| n > 0);
+        if let Some(&(_, id)) = soldiers
+            .iter()
+            .find(|(num, id)| Some(*num) == by_number || self.world.soldiers[*id].name == target)
+        {
+            return vec![id];
+        }
+        let me = self.player;
+        soldiers
+            .into_iter()
+            .map(|(_, id)| id)
+            .filter(|&id| {
+                let s = &self.world.soldiers[id];
+                match target {
+                    "@all" => true,
+                    "@bots" => s.is_bot(),
+                    "@humans" => !s.is_bot(),
+                    "@alive" => !s.dead_meat,
+                    "@dead" => s.dead_meat,
+                    "@me" => Some(id) == me,
+                    "@!me" => Some(id) != me,
+                    "@none" => s.team == Team::None,
+                    "@alpha" => s.team == Team::Alpha,
+                    "@bravo" => s.team == Team::Bravo,
+                    "@charlie" => s.team == Team::Charlie,
+                    "@delta" => s.team == Team::Delta,
+                    "@spec" => s.team == Team::Spectator,
+                    _ => false,
+                }
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod join_tests {
+    use super::*;
+
+    #[test]
+    fn servers_from_commands_and_urls() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            join_address(&args(&["10.0.0.1"])),
+            Some(("10.0.0.1".into(), String::new()))
+        );
+        assert_eq!(
+            join_address(&args(&["10.0.0.1", "23074", "secret"])),
+            Some(("10.0.0.1:23074".into(), "secret".into()))
+        );
+        assert_eq!(join_address(&[]), None);
+        assert_eq!(
+            join_url("soldat://example.org:23073/pass"),
+            Some(("example.org:23073".into(), "pass".into()))
+        );
+        assert_eq!(
+            join_url("soldat://[::1]:23073"),
+            Some(("[::1]:23073".into(), String::new()))
+        );
+        assert_eq!(join_url("nonsense"), None);
     }
 }

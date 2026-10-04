@@ -253,6 +253,10 @@ impl ServerGame {
                 let current = self.map_name();
                 self.prepare_map_change(renet, &current);
             }
+            "loadwep" => self.load_weapons(renet, sender, arg),
+            "loadcon" => self.load_config(renet, sender, arg),
+            "record" => self.start_recording(renet, (!arg.is_empty()).then_some(arg), false),
+            "stop" => self.stop_recording(renet),
             "kick" if !arg.is_empty() => {
                 for num in self.targets(arg, me) {
                     self.kick_player(renet, num, LeaveReason::Kicked, None);
@@ -529,6 +533,75 @@ impl ServerGame {
     pub(crate) fn is_muted(&self, id: ClientId) -> bool {
         let ip = self.clients.get(&id).and_then(|c| c.ip).map(ip_text);
         ip.is_some_and(|ip| self.lists.muted.contains(&ip))
+    }
+
+    /// `loadcon [file]`: the server's settings from `configs/<file>` (server.cfg) again, and
+    /// the match starts over (Soldat's also drops everyone; here they stay); not in
+    /// `sv_lockedmode`.
+    fn load_config(&mut self, renet: &mut RenetServer, sender: Option<ClientId>, name: &str) {
+        if self.cvars.bool("sv_lockedmode") {
+            let text = "Locked Mode is enabled. Settings can't be changed mid-game.";
+            self.reply(renet, sender, text);
+            return;
+        }
+        let name = if name.is_empty() { "server.cfg" } else { name };
+        if name.contains(['/', '\\']) || name.contains("..") {
+            return;
+        }
+        let path = self.config_dir.join("configs").join(name);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            self.reply(renet, sender, &format!("Cannot read {}", path.display()));
+            return;
+        };
+        for line in text.lines().map(str::trim) {
+            if !line.is_empty() && !line.starts_with("//") {
+                self.command(renet, None, line);
+            }
+        }
+        let map = self.map_name();
+        if let Err(error) = self.change_map(renet, &map) {
+            tracing::warn!(%error, map, "cannot restart the map");
+        }
+        self.reply(renet, sender, &format!("Config reloaded {name}"));
+    }
+
+    /// `loadwep [name]`: the mode's weapons from `configs/<name>.ini` (weapons.ini or
+    /// weapons_realistic.ini by `sv_realisticmode`), the defaults without it; everyone's
+    /// weapon in hand takes the new stats, and the clients get them (`ServerVars`).
+    fn load_weapons(&mut self, renet: &mut RenetServer, sender: Option<ClientId>, name: &str) {
+        let realistic = self.cvars.bool("sv_realisticmode");
+        let name = match name {
+            "" if realistic => "weapons_realistic",
+            "" => "weapons",
+            name => name,
+        };
+        if name.contains(['/', '\\']) || name.contains("..") {
+            return;
+        }
+        let path = format!("configs/{name}.ini");
+        let text = self
+            .vfs
+            .read_to_string(&path)
+            .ok()
+            .filter(|text| WeaponTable::new(realistic, Some(text)).is_ok());
+        let reply = match &text {
+            Some(_) => format!("Loaded weapons mod \"{name}\""),
+            None => "Using default weapons mod".to_string(),
+        };
+        let mut mods = self.data.weapons_mods.clone();
+        mods[usize::from(realistic)] = text;
+        self.data = Arc::new(self.data.with_weapons_mods(&mods));
+        self.world.data = self.data.clone();
+        self.world
+            .set_rules(WorldConfig::from_cvars(&self.cvars, &self.data));
+        self.world.reapply_weapons();
+        let bytes = encode(&ServerMessage::Weapons(mods));
+        for (id, client) in &self.clients {
+            if client.num.is_some() && client.refused_until.is_none() {
+                renet.send_message(*id, channel::RELIABLE, bytes.clone());
+            }
+        }
+        self.reply(renet, sender, &reply);
     }
 
     /// A server cvar: shown, or set (`ParseInput`'s cvar part).

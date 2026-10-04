@@ -70,6 +70,8 @@ impl Game {
             remote: Default::default(),
             assets,
             to_menu: false,
+            join: None,
+            action_snap: Default::default(),
             wants_settings: false,
             base_data,
             queued_events: Vec::new(),
@@ -161,6 +163,29 @@ impl Game {
         if self.world.clocks_ran {
             self.hud.messages.tick();
         }
+        // the action snap's offer runs out
+        if self.world.tick.is_multiple_of(60)
+            && let Some(left) = self.action_snap.counter
+        {
+            self.action_snap.counter = left.checked_sub(1);
+        }
+        // a kill of the player's, or by another's bullet, on screen: caught in a moment
+        for event in events {
+            if let GameEvent::Killed {
+                victim,
+                killer,
+                weapon: Some(_),
+                ..
+            } = *event
+                && (Some(killer) == self.player || Some(victim) == self.player)
+                && victim != killer
+                && let Some(chest) = self.world.soldiers.get(victim).map(|s| s.skeleton.pos(9))
+                && self.camera.on_screen(chest)
+            {
+                self.action_snap.counter = Some(5);
+                self.action_snap.capture_in = Some(4);
+            }
+        }
         // RadioCooldown
         if self.world.tick.is_multiple_of(60)
             && self.hud.radio_cooldown > 0
@@ -183,10 +208,11 @@ impl Game {
                     victim,
                     killer,
                     weapon,
+                    shot,
                     ..
                 } => {
                     ctx.messages
-                        .killed(ctx.world, self.player, victim, killer, weapon);
+                        .killed(ctx.world, self.player, victim, killer, weapon, shot);
                     if Some(victim) == self.player {
                         ctx.audio.play_here(Sfx::Playerdeath, listener.pos);
                     }
@@ -200,7 +226,7 @@ impl Game {
                     pos,
                     ..
                 } => ctx.audio.explosion(pos, ctx.world, &listener),
-                GameEvent::ThingTaken { kind, who, pos } => ctx.thing_taken(kind, who, pos),
+                GameEvent::ThingTaken { kind, who, pos, .. } => ctx.thing_taken(kind, who, pos),
                 GameEvent::FlagCaptured { team, who } => ctx.flag_captured(team, who),
                 GameEvent::Chat { who, ref text } => {
                     tracing::debug!(?who, text, "chat");
@@ -427,6 +453,33 @@ impl EventHandler for Game {
         let p = f64::clamp(self.clock.acc / tick_time, 0.0, 1.0);
         self.clock.frame();
 
+        // the action snap shown: only it (`ShowScreen`)
+        if self.action_snap.show
+            && let Some(image) = &self.action_snap.image
+        {
+            let width = self.camera.game_width;
+            let elapsed = self.clock.cur;
+            self.graphics
+                .render_snap(&mut self.context, image, width, elapsed);
+            self.take_screenshot();
+            if std::mem::take(&mut self.action_snap.close_after_shot) {
+                self.action_snap.show = false;
+            }
+            return;
+        }
+        // its moment comes (`CapScreen`)
+        let grab = match self.action_snap.capture_in {
+            Some(0) => {
+                self.action_snap.capture_in = None;
+                self.console.cvars.bool("cl_actionsnap")
+            }
+            Some(n) => {
+                self.action_snap.capture_in = Some(n - 1);
+                false
+            }
+            None => false,
+        };
+
         let shown = self.shown();
         let interface = self.hud.interface_state(
             shown,
@@ -436,7 +489,7 @@ impl EventHandler for Game {
             &self.console.cvars,
             (self.camera.mouse, self.follow),
         );
-        self.graphics.render_frame(
+        let caught = self.graphics.render_frame(
             &mut self.context,
             &self.world,
             &self.camera,
@@ -444,24 +497,24 @@ impl EventHandler for Game {
             p as f32,
             &interface,
             &self.sparks,
+            grab,
         );
+        if let Some(image) = caught {
+            let texture = gfx2d::Texture::from_image(
+                &mut self.context,
+                image,
+                gfx2d::FilterMethod::Scale,
+                gfx2d::WrapMode::Clamp,
+                None,
+            );
+            if let Some(old) = self.action_snap.image.replace(texture) {
+                self.context.delete_texture(old);
+            }
+        }
 
         #[cfg(feature = "dev")]
         let overlay_open = self.overlay.open;
-        if let Some(path) = self.screenshot.take() {
-            let image = self.context.read_screen();
-            // saved asynchronously, like GfxSaveScreen
-            platform::spawn(move || {
-                let saved = path
-                    .parent()
-                    .map_or(Ok(()), std::fs::create_dir_all)
-                    .map_err(gfx2d::image::ImageError::IoError)
-                    .and_then(|()| image.save(&path));
-                if let Err(error) = saved {
-                    tracing::warn!(%error, path = %path.display(), "cannot save screenshot");
-                }
-            });
-        }
+        self.take_screenshot();
         #[cfg(feature = "dev")]
         if overlay_open {
             let (world, console) = (&self.world, &mut self.console);
@@ -501,5 +554,25 @@ impl EventHandler for Game {
 
     fn raw_mouse_motion(&mut self, dx: f32, dy: f32) {
         self.raw_mouse(dx, dy);
+    }
+}
+
+impl Game {
+    /// A screenshot asked for, of what's on the screen now.
+    fn take_screenshot(&mut self) {
+        if let Some(path) = self.screenshot.take() {
+            let image = self.context.read_screen();
+            // saved asynchronously, like GfxSaveScreen
+            platform::spawn(move || {
+                let saved = path
+                    .parent()
+                    .map_or(Ok(()), std::fs::create_dir_all)
+                    .map_err(gfx2d::image::ImageError::IoError)
+                    .and_then(|()| image.save(&path));
+                if let Err(error) = saved {
+                    tracing::warn!(%error, path = %path.display(), "cannot save screenshot");
+                }
+            });
+        }
     }
 }

@@ -148,6 +148,30 @@ pub fn register_cvars(cvars: &mut Cvars) {
         .flags(CvarFlags::SERVER | CvarFlags::SYNC),
     );
     cvars.register(
+        Cvar::bool(
+            "sv_survivalmode_antispy",
+            false,
+            "Enables anti spy chat in survival mode",
+        )
+        .flags(CvarFlags::SERVER | CvarFlags::SYNC),
+    );
+    cvars.register(
+        Cvar::bool(
+            "sv_pauseonidle",
+            true,
+            "Pauses the server when no human players are connected",
+        )
+        .flags(CvarFlags::SERVER),
+    );
+    cvars.register(
+        Cvar::bool(
+            "sv_lockedmode",
+            false,
+            "When Locked Mode is enabled, admins will not be able to type /loadcon, /password or /maxplayers",
+        )
+        .flags(CvarFlags::SERVER),
+    );
+    cvars.register(
         Cvar::bool("sv_advancemode", false, "Enables advance mode")
             .flags(rules | CvarFlags::INIT_ONLY),
     );
@@ -316,10 +340,29 @@ pub fn register_cvars(cvars: &mut Cvars) {
                 .range(0.0, 100.0),
         );
     }
+    cvars.register(Cvar::bool("demo_autorecord", false, "Auto record demos"));
     cvars.register(
         Cvar::int("net_lan", 0, "Set to 1 to set server to LAN mode")
             .flags(CvarFlags::SERVER)
             .range(0.0, 1.0),
+    );
+    cvars.register(
+        Cvar::int(
+            "net_t1_deadsnapshot",
+            50,
+            "How often to send dead sprite snapshot packets on the internet in ticks (60 ticks = 1 second)",
+        )
+        .flags(CvarFlags::SERVER)
+        .range(1.0, 1000.0),
+    );
+    cvars.register(
+        Cvar::int(
+            "net_t1_thingsnapshot",
+            31,
+            "How often to send thing snapshot packets on the internet in ticks (60 ticks = 1 second)",
+        )
+        .flags(CvarFlags::SERVER)
+        .range(1.0, 1000.0),
     );
     for (name, default, description) in [
         (
@@ -710,9 +753,15 @@ pub enum GameEvent {
         weapon: Option<WeaponKind>,
         /// The killing bullet hit the head.
         headshot: bool,
+        /// The skeleton point the killing hit struck (`Where`; 1 without a bullet).
+        hit: u8,
+        /// The last killing shot (the server's `ShotDistance`, `ShotLife`, `ShotRicochet`,
+        /// which a kill without one leaves as they were).
+        shot: Shot,
     },
     /// A soldier took a thing (`ServerThingTaken`): a weapon, kit, flag or stationary gun.
     ThingTaken {
+        slot: usize,
         kind: ThingKind,
         who: SoldierId,
         /// Where the thing was.
@@ -735,6 +784,15 @@ pub enum GameEvent {
     MatchEnded,
     /// Time to load the next map.
     ChangeMap,
+}
+
+/// A killing shot, for the killer's screen: how far the bullet flew (metres), how long
+/// (seconds) and how often it bounced.
+#[derive(Debug, Clone, Copy, Default, PartialEq, bitcode::Encode, bitcode::Decode)]
+pub struct Shot {
+    pub distance: f32,
+    pub life: f32,
+    pub ricochets: u8,
 }
 
 #[derive(Clone)]
@@ -767,6 +825,8 @@ pub struct World {
     /// The game's clocks (the time limit, the map change, the respawn waves) ran this tick:
     /// they stand still in bullet time.
     pub clocks_ran: bool,
+    /// The last killing shot.
+    pub shot: Shot,
 }
 
 /// `CreateSprite` for a spectator: at rest far off the map, empty-handed. The skeleton
@@ -803,6 +863,19 @@ impl World {
             net_bullets: None,
             bullet_time: -1,
             clocks_ran: false,
+            shot: Shot::default(),
+        }
+    }
+
+    /// Weapons with new stats (`LoadWeapons`): each soldier's weapon in hand again, its
+    /// bullets kept (`ApplyWeaponByNum(Weapon.Num, 1, AmmoCount)`).
+    pub fn reapply_weapons(&mut self) {
+        let weapons = self.config.weapons.clone();
+        for soldier in self.soldiers.values_mut().filter(|s| s.active) {
+            let weapon = &mut soldier.weapons[soldier.active_weapon];
+            let ammo = weapon.ammo_count;
+            *weapon = weapons.get(weapon.kind);
+            weapon.ammo_count = ammo;
         }
     }
 
@@ -878,6 +951,8 @@ impl World {
                 how,
                 weapon: None,
                 headshot: false,
+                hit: 1,
+                shot: self.shot,
             });
             self.on_death(id, id, events);
         }
@@ -918,6 +993,7 @@ impl World {
         soldier.head_cap = profile.head_cap;
         soldier.wear_helmet = u8::from(profile.head_cap != 0);
         soldier.brain = Some(profile.brain(id, first, difficulty));
+        soldier.connection_quality = 0;
         if team == Team::Spectator {
             park_spectator(soldier, &self.map, &self.data, &self.config.weapons);
         }
@@ -961,8 +1037,15 @@ impl World {
         };
         soldier.drop_weapon(&self.config);
         self.process_drops();
+        self.add_spectator(id);
+    }
 
-        let soldier = &mut self.soldiers[id];
+    /// A soldier watches from the spectators without having played (a joining player's,
+    /// `ServerHandlePlayerInfo`): nothing to drop.
+    pub fn add_spectator(&mut self, id: SoldierId) {
+        let Some(soldier) = self.soldiers.get_mut(id) else {
+            return;
+        };
         soldier.team = Team::Spectator;
         park_spectator(soldier, &self.map, &self.data, &self.config.weapons);
         soldier.dead_meat = true;
@@ -1299,6 +1382,8 @@ impl World {
                 how,
                 weapon: None,
                 headshot: false,
+                hit: 1,
+                shot: self.shot,
             });
             self.on_death(id, id, events);
         }
@@ -1331,6 +1416,8 @@ impl World {
                 how: DeathKind::Normal,
                 weapon: None,
                 headshot: false,
+                hit: 1,
+                shot: self.shot,
             });
             self.on_death(id, id, events);
         }
@@ -1417,8 +1504,11 @@ impl World {
             _ => 800,
         };
         let tick = self.tick;
-        // TODO: team modes make cluster kits more likely (Round(4 * 0.75))
-        let cluster_random = 4;
+        // the flag modes make cluster kits more likely (Round(4 * 0.75))
+        let cluster_random = match self.config.game_mode {
+            GameMode::CaptureTheFlag | GameMode::Infiltration | GameMode::HoldTheFlag => 3,
+            _ => 4,
+        };
         let rolls = [
             (bonuses.berserker, freq, 4, ThingKind::BerserkKit),
             (bonuses.flamer, 444, 5, ThingKind::FlamerKit),
@@ -1561,6 +1651,7 @@ impl World {
                 None,
             ) {
                 things[n].holding = Some(id);
+                things[n].color = self.soldiers[id].looks.shirt;
                 self.soldiers[id].holded_thing = Some(n);
             }
             self.things = things;
@@ -1790,6 +1881,7 @@ impl World {
         // in a slot whose last bullet flew far
         let stale_degrade = self.bullets[slot].degrade_count;
         self.bullets[slot] = Bullet::new(params, owner, seed, self.config.gravity);
+        self.bullets[slot].start_tick = self.tick;
         self.bullets[slot].particle.force = stale_force;
         self.bullets[slot].degrade_count = stale_degrade;
         self.record_net_bullet(slot, params, owner);
@@ -1811,7 +1903,7 @@ impl World {
 
         for id in ids {
             let soldier = &mut self.soldiers[id];
-            soldier.update_begin();
+            soldier.update_begin(self.config.client);
             if soldier.brain.is_some() {
                 self.control_bot(id);
             }
@@ -1851,6 +1943,8 @@ impl World {
                             how,
                             weapon: None,
                             headshot: false,
+                            hit: 1,
+                            shot: self.shot,
                         });
                         self.on_death(id, id, events);
                     }
@@ -1879,6 +1973,11 @@ impl World {
         for slot in 0..MAX_BULLETS {
             if self.bullets[slot].active {
                 self.update_bullet(slot, &mut outcomes, events);
+            }
+            // (a client's late shots' trails shorten, also once they're gone)
+            let bullet = &mut self.bullets[slot];
+            if self.config.client && bullet.ping_add > 0 {
+                bullet.ping_add -= 4;
             }
         }
 
@@ -1933,6 +2032,7 @@ impl World {
                 config: &self.config,
                 things: &mut self.things,
                 tick: self.tick,
+                slot,
                 soldiers: &mut self.soldiers,
                 bullets: &mut self.bullets,
                 rng: &mut self.rng,
@@ -1967,14 +2067,20 @@ impl World {
                     killer,
                     kill,
                     weapon,
+                    shot,
                 } => {
                     self.score_kill(victim, killer, kill.victim_weapon, Some(weapon));
+                    if let Some(shot) = shot {
+                        self.shot = shot;
+                    }
                     events.push(GameEvent::Killed {
                         victim,
                         killer,
                         how: kill.how,
                         weapon: Some(weapon),
                         headshot: kill.head,
+                        hit: kill.hit,
+                        shot: self.shot,
                     });
                     self.on_death(victim, killer, events);
                 }

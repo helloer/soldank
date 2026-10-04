@@ -214,6 +214,11 @@ pub struct Thing {
     pub skeleton: ParticleSystem,
     pub collide_count: [u8; 4],
     pub bg: BackgroundState,
+    /// Its owner faced left when it was made: drawn with the other images (`+ k` on
+    /// `Tex1`, `Tex2`).
+    pub flip: bool,
+    /// A parachute's colour, its soldier's shirt (`Color`, 0xRRGGBB).
+    pub color: u32,
 }
 
 /// A weapon a soldier lets go of, turned into a thing by the world (`TSprite.DropWeapon`).
@@ -320,6 +325,10 @@ pub fn create_thing(
     thing.in_base = false;
     thing.bg = BackgroundState::default();
     thing.collide_count = [0; 4];
+    thing.flip = owner
+        .and_then(|o| ctx.soldiers.get(o))
+        .is_some_and(|o| o.direction != 1);
+    thing.color = 0;
 
     // (v_damping, gravity multiplier, skeleton, radius, timeout, interest, collides with bullets)
     let (guns, kits) = (ctx.config.guns_collide, ctx.config.kits_collide);
@@ -450,7 +459,7 @@ impl Thing {
     /// Port of `TThing.Update` (server side). Flags, parachutes, the bow and stationary
     /// guns only get their physics so far.
     /// The team a flag belongs to (Soldat compares teams with the style number).
-    fn flag_team(&self) -> Team {
+    pub(crate) fn flag_team(&self) -> Team {
         match self.kind {
             ThingKind::AlphaFlag => Team::Alpha,
             ThingKind::BravoFlag => Team::Bravo,
@@ -546,10 +555,11 @@ impl Thing {
                 self.interest = FLAG_INTEREST_TIME;
                 // the own team brought it home
                 let team = self.flag_team();
-                if self
-                    .holding
-                    .and_then(|h| ctx.soldiers.get(h))
-                    .is_some_and(|h| h.team == team)
+                if !ctx.config.client
+                    && self
+                        .holding
+                        .and_then(|h| ctx.soldiers.get(h))
+                        .is_some_and(|h| h.team == team)
                 {
                     self.respawn(slot, ctx);
                 }
@@ -612,7 +622,14 @@ impl Thing {
             ctx.sounds.push(sound.at(self.pos(2)).into());
         }
 
-        // parachute
+        // parachute (a client lets go of one sooner)
+        if self.kind == Parachute
+            && self.holding.is_none()
+            && ctx.config.client
+            && self.timeout > 180
+        {
+            self.timeout = 180;
+        }
         if self.kind == Parachute
             && let Some(holder) = self.holding.and_then(|h| ctx.soldiers.get_mut(h))
         {
@@ -633,7 +650,8 @@ impl Thing {
 
         // count time out
         self.timeout = (self.timeout - 1).max(-1000);
-        if self.timeout == 0 && !ctx.config.client {
+        // (a client's parachutes are its own)
+        if self.timeout == 0 && (!ctx.config.client || self.kind == Parachute) {
             match self.kind {
                 AlphaFlag | BravoFlag | PointmatchFlag | RamboBow => {
                     if self.holding.is_some() {
@@ -918,6 +936,7 @@ impl Thing {
                 if soldier.legs_animation.id == Anim::Stand {
                     soldier.play(Sfx::M2use);
                     ctx.events.push(GameEvent::ThingTaken {
+                        slot,
                         kind: self.kind,
                         who: id,
                         pos: self.pos(1),
@@ -961,6 +980,7 @@ impl Thing {
 
         if let Some(holder) = self.holding.and_then(|h| ctx.soldiers.get_mut(h)) {
             holder.holded_thing = None;
+            holder.holds_flag = false;
         }
         self.kill();
 
@@ -1090,6 +1110,7 @@ impl Thing {
             };
             ctx.soldiers[j].play(sfx);
             ctx.events.push(GameEvent::ThingTaken {
+                slot,
                 kind: self.kind,
                 who: j,
                 pos: self.pos(1),
@@ -1231,6 +1252,7 @@ impl Thing {
                     }
                     ctx.sounds.push(SoundEvent::at(Sfx::Capture, self.pos(1)));
                     ctx.events.push(GameEvent::ThingTaken {
+                        slot,
                         kind: self.kind,
                         who: j,
                         pos: self.pos(1),
@@ -1306,11 +1328,33 @@ pub fn spawn_things(things: &mut [Thing], ctx: &mut ThingCtx, kind: ThingKind, a
         _ => 0,
     };
 
-    for _ in 0..amount {
-        // TODO: CTF splits medikits and grenade kits between the teams
-        things[MAX_THINGS - 2].team = 0;
+    for i in 1..=amount {
+        // CTF takes turns with medikits and grenade kits between the teams, spread over
+        // their spawn points (`SpawnBoxes`)
+        let side = match kind {
+            ThingKind::MedicalKit | ThingKind::GrenadeKit
+                if ctx.config.game_mode == GameMode::CaptureTheFlag =>
+            {
+                if i % 2 == 0 {
+                    1
+                } else {
+                    2
+                }
+            }
+            _ => 0,
+        };
+        things[MAX_THINGS - 2].team = side;
 
-        let (mut a, found) = randomize_start_team(ctx.map, team, ctx.rng);
+        let mut spread = (Vec2::ZERO, false);
+        if side != 0 {
+            let last = &mut things[MAX_THINGS - 2].last_spawn;
+            spread = spawn_boxes(ctx.map, team, last, ctx.rng);
+        }
+        let (mut a, found) = if spread.1 {
+            spread
+        } else {
+            randomize_start_team(ctx.map, team, ctx.rng)
+        };
         if !found {
             return;
         }
@@ -1320,7 +1364,7 @@ pub fn spawn_things(things: &mut [Thing], ctx: &mut ThingCtx, kind: ThingKind, a
         a.x = fpc(ext(a.x - SPAWNRANDOMVELOCITY) + ctx.rng.below_i64(r) as f64 / 100.0);
         a.y = fpc(ext(a.y - SPAWNRANDOMVELOCITY) + ctx.rng.below_i64(r) as f64 / 100.0);
         if let Some(l) = create_thing(things, ctx, a, None, kind, None, None) {
-            things[l].team = 0;
+            things[l].team = side;
         }
     }
 }

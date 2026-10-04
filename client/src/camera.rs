@@ -14,6 +14,12 @@ pub struct Camera {
 }
 
 impl Camera {
+    /// `IsPointOnScreen`: within the game's view around the camera (unzoomed).
+    pub fn on_screen(&self, point: Vec2) -> bool {
+        let p = vec2(self.game_width, self.game_height) / 2.0 - (self.pos - point);
+        (0.0..=self.game_width).contains(&p.x) && (0.0..=self.game_height).contains(&p.y)
+    }
+
     pub fn new(pos: Vec2, game_width: f32, game_height: f32) -> Camera {
         // the cursor starts in the middle of the screen
         let middle = vec2(game_width, game_height) / 2.0;

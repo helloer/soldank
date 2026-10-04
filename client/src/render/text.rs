@@ -158,10 +158,25 @@ impl Fonts {
         color: Color,
         shadow: Option<Color>,
     ) {
+        self.draw_scaled(batch, style, text, pos, color, shadow, 1.0);
+    }
+
+    /// [`Fonts::draw`], `zoom` times as big (from `pos`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_scaled(
+        &self,
+        batch: &mut DrawBatch,
+        style: FontStyle,
+        text: &str,
+        pos: Vec2,
+        color: Color,
+        shadow: Option<Color>,
+        zoom: f32,
+    ) {
         if let Some(shadow) = shadow {
-            self.draw_plain(batch, style, text, pos + vec2(1.0, 1.0), shadow);
+            self.draw_plain(batch, style, text, pos + vec2(1.0, 1.0), shadow, zoom);
         }
-        self.draw_plain(batch, style, text, pos, color);
+        self.draw_plain(batch, style, text, pos, color, zoom);
     }
 
     fn draw_plain(
@@ -171,6 +186,7 @@ impl Fonts {
         text: &str,
         pos: Vec2,
         color: Color,
+        zoom: f32,
     ) {
         let Some(atlas) = self.atlas(style) else {
             return;
@@ -181,17 +197,17 @@ impl Fonts {
         let s = self.scale;
         // snap the pen to pixels so glyphs stay crisp
         let origin = (pos * s).round();
-        let mut pen = vec2(origin.x, origin.y + atlas.ascent.round());
+        let mut pen = vec2(0.0, atlas.ascent.round());
 
         for c in text.chars() {
             if c == '\n' {
-                pen = vec2(origin.x, pen.y + atlas.line_height.round());
+                pen = vec2(0.0, pen.y + atlas.line_height.round());
                 continue;
             }
             let g = Self::glyph(atlas, c);
             if g.size.x > 0.0 {
-                let p0 = (pen + g.offset) / s;
-                let p1 = (pen + g.offset + g.size) / s;
+                let p0 = (origin + (pen + g.offset) * zoom) / s;
+                let p1 = (origin + (pen + g.offset + g.size) * zoom) / s;
                 let (t0, t1) = g.texcoords;
                 batch.add_quad(
                     Some(texture),

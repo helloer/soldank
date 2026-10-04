@@ -24,17 +24,21 @@ tracing-subscriber.workspace = true
 egui.workspace = true
 egui-miniquad.workspace = true
 
-# not in the browser (wasm32): kira's cpal backend, playing on a server, the local time
+# playing on a server: over UDP, or WebTransport in the browser
+renet2.workspace = true
+renet2_netcode.workspace = true
+
+# not in the browser (wasm32): kira's cpal backend, UDP, the local time
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 chrono.workspace = true
 kira.workspace = true
-renet.workspace = true
-renet_netcode.workspace = true
+renet2_netcode = { workspace = true, features = ["native_transport"] }
 
 # in the browser: kira with a backend of the game's own, the log in the browser's console
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 kira = { version = "0.12.5", default-features = false, features = ["wav", "pcm", "adpcm"] }
 miniquad = { workspace = true, features = ["log-impl"] }
+url = "2"
 
 [dev-dependencies]
 slotmap.workspace = true

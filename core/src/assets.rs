@@ -184,6 +184,20 @@ impl Vfs {
         Ok(())
     }
 
+    /// The game's own files at `base`, a folder or `soldat.smod`. A folder with `soldat.smod`
+    /// beside it (some files taken out of it, maybe changed) goes over the archive, which
+    /// has the rest.
+    pub fn mount_game_files(&mut self, base: &Path) -> Result<()> {
+        if base.is_dir() {
+            let dir = base.parent().filter(|d| !d.as_os_str().is_empty());
+            let archive = dir.unwrap_or(Path::new(".")).join("soldat.smod");
+            if archive.is_file() {
+                self.mount(&archive)?;
+            }
+        }
+        self.mount(base)
+    }
+
     /// Mounts a `.smod`/`.zip` archive held in memory (fetched in the browser; shared bytes
     /// mount again without a copy), `name` for errors.
     pub fn mount_archive(
@@ -497,6 +511,27 @@ mod tests {
         vfs.mount(&zip).unwrap();
         assert_eq!(vfs.list("maps"), ["ctf_ash.pms", "inf_abel.pms"]);
         assert_eq!(vfs.list_names("maps"), ["ctf_Ash.pms", "inf_Abel.pms"]);
+    }
+
+    #[test]
+    fn a_folder_of_game_files_goes_over_the_archive_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().join("assets");
+        write(&assets, "mod.ini", "changed");
+        write_zip(
+            &dir.path().join("soldat.smod"),
+            &[
+                ("mod.ini", "original"),
+                ("txt/radiomenu-default.ini", "[OPTIONS]"),
+            ],
+        );
+        let mut vfs = Vfs::new();
+        vfs.mount_game_files(&assets).unwrap();
+        assert_eq!(vfs.read_to_string("mod.ini").unwrap(), "changed");
+        assert_eq!(
+            vfs.read_to_string("txt/radiomenu-default.ini").unwrap(),
+            "[OPTIONS]"
+        );
     }
 
     #[test]

@@ -27,6 +27,20 @@ pub(crate) struct Hud {
     pub(crate) debug_draw: render::debug::DebugDraw,
 }
 
+/// Action snap (`cl_actionsnap`): a kill on screen is caught a few frames later, without
+/// the interface, to look at (the `snap` key) or keep (`screenshot`) while it's offered.
+#[derive(Default)]
+pub(crate) struct ActionSnap {
+    /// Seconds left of the offer (`ScreenCounter`), frames to the catch (`CapScreen`).
+    pub counter: Option<u8>,
+    pub capture_in: Option<u8>,
+    /// What was caught (`ActionSnapTaken`), and it fills the screen (`ShowScreen`).
+    pub image: Option<gfx2d::Texture>,
+    pub show: bool,
+    /// The screenshot keeps it: it goes away after that frame.
+    pub close_after_shot: bool,
+}
+
 /// What the interface shows that the game works out ([`Game::shown`]).
 pub(crate) struct Shown {
     /// The kick menu's player (name, shirt colour) and the map menu's map.
@@ -38,6 +52,9 @@ pub(crate) struct Shown {
     con_info: Option<render::interface::ConInfo>,
     recording: bool,
     wide_cut: bool,
+    /// "Press F5 to View Screen Cap", and no crosshair (a demo without `demo_showcrosshair`).
+    snap_offered: bool,
+    no_crosshair: bool,
 }
 
 impl Hud {
@@ -82,6 +99,8 @@ impl Hud {
             con_info: shown.con_info,
             recording: shown.recording,
             wide_cut: shown.wide_cut,
+            snap_offered: shown.snap_offered,
+            no_crosshair: shown.no_crosshair,
         }
     }
 
@@ -165,6 +184,10 @@ impl Game {
             wide_cut: self.world.config.bullet_time
                 && self.world.bullet_time > 0
                 && !self.world.game.ended(),
+            snap_offered: self.console.cvars.bool("cl_actionsnap")
+                && self.action_snap.counter.is_some()
+                && !self.action_snap.show,
+            no_crosshair: self.playback.is_some() && !self.console.cvars.bool("demo_showcrosshair"),
         }
     }
 

@@ -159,6 +159,8 @@ fn parse_color(input: &str) -> Option<u32> {
 pub struct Cvars {
     vars: BTreeMap<String, Cvar>,
     started: bool,
+    /// Counts the values set: another number, other values.
+    generation: u64,
 }
 
 impl Cvars {
@@ -185,6 +187,11 @@ impl Cvars {
         self.vars.values()
     }
 
+    /// Changes with every value set (to see that something may have changed).
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn set(&mut self, name: &str, input: &str) -> Result<()> {
         let started = self.started;
         let cvar = self
@@ -197,6 +204,7 @@ impl Cvars {
         }
 
         cvar.value = cvar.parse(input)?;
+        self.generation += 1;
         Ok(())
     }
 
@@ -208,6 +216,7 @@ impl Cvars {
             .get_mut(name)
             .ok_or_else(|| ConfigError::Unknown(name.to_owned()))?;
         cvar.value = cvar.parse(input)?;
+        self.generation += 1;
         Ok(())
     }
 
@@ -219,6 +228,7 @@ impl Cvars {
             .ok_or_else(|| ConfigError::Unknown(name.to_owned()))?;
         cvar.default = cvar.parse(input)?;
         cvar.value = cvar.default.clone();
+        self.generation += 1;
         Ok(())
     }
 
@@ -228,6 +238,7 @@ impl Cvars {
             .get_mut(name)
             .ok_or_else(|| ConfigError::Unknown(name.to_owned()))?;
         cvar.value = cvar.default.clone();
+        self.generation += 1;
         Ok(())
     }
 

@@ -12,6 +12,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # the server's WebTransport (rustls with aws-lc): no NASM on Windows runners
+  AWS_LC_SYS_PREBUILT_NASM: "1"
 
 jobs:
   fmt:

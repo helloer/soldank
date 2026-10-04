@@ -240,7 +240,9 @@ impl ServerGame {
             out.extend((slot(i).map_or(0, |(_, s)| s.deaths) as u16).to_le_bytes());
         }
         for i in 0..MAX_PLAYERS {
-            out.extend(i32::from(slot(i).map_or(0, |(_, s)| s.ping)).to_le_bytes());
+            // `PingTime`: the ping in ticks, as milliseconds
+            let ping = slot(i).map_or(0, |(_, s)| i32::from(s.ping_ticks) * 1000 / 60);
+            out.extend(ping.to_le_bytes());
         }
         for i in 0..MAX_PLAYERS {
             out.push(slot(i).map_or(0, |(num, _)| num));

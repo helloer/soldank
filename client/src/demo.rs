@@ -13,9 +13,6 @@ use soldank_core::net::{
 use std::fs::File;
 use std::io::BufWriter;
 
-/// Demo files.
-pub const DEMO_EXTENSION: &str = "sdemo";
-
 /// A played frame: what happened, and the recording player's input.
 pub type PlayedFrame = (Vec<GameEvent>, Vec<(SoldierId, Input)>);
 
@@ -189,9 +186,11 @@ impl Game {
                 .things
                 .iter()
                 .enumerate()
-                .filter(|(_, t)| t.active)
+                .filter(|(_, t)| t.active && t.kind != ThingKind::Parachute)
                 .map(|(slot, t)| ThingState::of(slot, t, num_of))
                 .collect(),
+            thing_snapshot: true,
+            dead_snapshot: true,
             team_scores: self.world.game.team_scores,
             time_left: self.world.game.time_left,
         }));
@@ -398,7 +397,13 @@ impl Game {
             let Some(notice) = playback.net.apply(&mut self.world, message) else {
                 continue;
             };
-            let map = matches!(notice, soldank_core::net::Notice::MapChange { .. });
+            // (also while seeking: what the match plays by)
+            let map = matches!(
+                notice,
+                soldank_core::net::Notice::MapChange { .. }
+                    | soldank_core::net::Notice::Cvars(_)
+                    | soldank_core::net::Notice::Weapons(_)
+            );
             if (!quiet || map)
                 && let Some(event) = self.notice(notice)
             {
@@ -541,13 +546,6 @@ impl Game {
             true => playback.own,
             false => playback.net.own(),
         };
-        // the recording player, once there (and back when the followed one's gone)
-        let gone = self
-            .follow
-            .is_none_or(|id| !self.world.soldiers.contains_key(id));
-        if gone && !playback.free_cam {
-            self.follow = own;
-        }
         let ids: Vec<SoldierId> = self
             .world
             .soldiers
@@ -555,6 +553,16 @@ impl Game {
             .filter(|(_, s)| s.active && !s.is_spectator())
             .map(|(id, _)| id)
             .collect();
+        // the recording player, once there (and back when the followed one's gone); a
+        // server's recorder has no soldier: a player then (`GetCameraTarget`)
+        let gone = self
+            .follow
+            .is_none_or(|id| !self.world.soldiers.contains_key(id));
+        if gone && !playback.free_cam {
+            self.follow = own
+                .filter(|id| self.world.soldiers.contains_key(*id))
+                .or_else(|| ids.first().copied());
+        }
         let step = |by: isize, from: Option<SoldierId>| {
             if ids.is_empty() {
                 return None;

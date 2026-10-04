@@ -61,7 +61,7 @@ impl Assets {
         match &self.archive {
             Some(archive) => vfs.mount_archive("soldat.smod", archive.clone())?,
             None => vfs
-                .mount(&self.base)
+                .mount_game_files(&self.base)
                 .with_context(|| format!("cannot mount assets from {}", self.base.display()))?,
         }
         if let Some(font) = &self.font {

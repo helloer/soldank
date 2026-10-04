@@ -43,6 +43,9 @@ pub struct HudState<'a> {
     pub con_info: Option<&'a super::interface::ConInfo>,
     /// A demo is being recorded.
     pub recording: bool,
+    /// An action snap is offered; the crosshair is off (a demo).
+    pub snap_offered: bool,
+    pub no_crosshair: bool,
     /// Bullet time: the screen cut wide.
     pub wide_cut: bool,
 }
@@ -119,6 +122,10 @@ pub struct HudMessages {
     /// Everything said recently, shown while typing.
     pub history: TextConsole,
     pub chats: Vec<ChatBubble>,
+    /// The player's killing shot, and how long it shows (`ShotDistanceShow`).
+    shot: Option<(Shot, i32)>,
+    /// `mute all` (`MuteAll`): nobody's chat shows.
+    pub mute_all: bool,
 }
 
 impl Default for HudMessages {
@@ -131,6 +138,8 @@ impl Default for HudMessages {
             main: TextConsole::new(150, 150),
             history: TextConsole::new(1_500_000, 0),
             chats: Vec::new(),
+            shot: None,
+            mute_all: false,
         }
     }
 }
@@ -205,6 +214,12 @@ impl HudMessages {
                 self.big = None;
             }
         }
+        if let Some((_, show)) = &mut self.shot {
+            *show -= 1;
+            if *show <= 0 {
+                self.shot = None;
+            }
+        }
     }
 
     /// `BigMessage`: the message in the middle for `wait` ticks.
@@ -244,6 +259,9 @@ impl HudMessages {
         let Some(soldier) = world.soldiers.get(id).filter(|s| s.active) else {
             return;
         };
+        if soldier.muted || self.mute_all {
+            return;
+        }
         let spaces = text.chars().filter(|&c| c == ' ').count() as i32;
         let delay = if spaces == 0 {
             text.chars().count() as i32 * CHAR_DELAY
@@ -283,10 +301,15 @@ impl HudMessages {
         victim: SoldierId,
         killer: SoldierId,
         weapon: Option<WeaponKind>,
+        shot: Shot,
     ) {
         let (Some(v), Some(k)) = (world.soldiers.get(victim), world.soldiers.get(killer)) else {
             return;
         };
+        // the shot's distance, air time and ricochets
+        if Some(killer) == player && victim != killer {
+            self.shot = Some((shot, KILL_MESSAGE_WAIT - 30));
+        }
         if Some(victim) == player && victim != killer {
             self.big = Some((
                 format!("Killed by {}", k.name),
@@ -531,7 +554,7 @@ pub fn render_hud(batch: &mut DrawBatch, fonts: &Fonts, sprites: &[Vec<Sprite>],
 
     // the crosshair, bigger while binked or moving inaccurately, half size with the sniper
     // line, red or green over a player
-    if !state.menus.any_active() && !me.dead_meat && !world.game.ended() {
+    if !state.menus.any_active() && !me.dead_meat && !world.game.ended() && !state.no_crosshair {
         let sniper_line = state.cvars.bool("ui_sniperline") && state.cvars.bool("sv_sniperline");
         let cursor = hud.sprite(Interface::Cursor);
         let size = vec2(cursor.width, cursor.height);
@@ -1153,6 +1176,43 @@ pub fn render_texts(
         hud.text(FontStyle::Small, "REC", pos, rgba(195, 0, 0, alpha));
     }
 
+    // action snap
+    if state.snap_offered {
+        let alpha = 150 + ((5.1 * state.elapsed).sin() * 100.0).round().abs() as u8;
+        let text = "[[ Press F5 to View Screen Cap ]]";
+        let pos = vec2(30.0 * hud.iscale, 412.0);
+        hud.text(FontStyle::Small, text, pos, rgba(230, 65, 60, alpha));
+    }
+
+    // shot distance
+    if let Some((shot, _)) = state.messages.shot {
+        let alpha = 150 + ((5.1 * state.elapsed).sin() * 100.0).round().abs() as u8;
+        let color = rgba(230, 65, 60, alpha);
+        let distance = format!("DISTANCE: {:.2}m", shot.distance);
+        hud.text(
+            FontStyle::Small,
+            &distance,
+            vec2(390.0 * hud.iscale, 431.0),
+            color,
+        );
+        let air = format!("AIRTIME: {:.2}s", shot.life);
+        hud.text(
+            FontStyle::Small,
+            &air,
+            vec2(228.0 * hud.iscale, 431.0),
+            color,
+        );
+        if shot.ricochets > 0 {
+            let ricochets = format!("RICOCHETS: {}", shot.ricochets);
+            hud.text(
+                FontStyle::Small,
+                &ricochets,
+                vec2(62.0 * hud.iscale, 431.0),
+                color,
+            );
+        }
+    }
+
     // bullet time: black bars over the top and bottom
     if state.wide_cut {
         let black = rgba(0, 0, 0, 255);
@@ -1206,13 +1266,14 @@ fn render_messages(hud: &mut Hud, state: &HudState) {
         let alpha = (3 * delay + 25).clamp(0, (color >> 24) as i32) as u8;
         let mut c = argb(*color);
         c.set_a(alpha);
-        // TODO: shrink texts wider than 70% of the screen (`BigScale`)
+        // texts wider than 70% of the screen shrink to that (`BigScale`)
         let width = hud.fonts.measure(FontStyle::Big, text).x;
+        let zoom = (0.7 * state.size.x / width).min(1.0);
         // (above the bullet time bar)
         let dy = if state.wide_cut { -30.0 } else { 0.0 };
         let pos = vec2(
-            (state.size.x - width) / 2.0,
-            420.0 - hud.fonts.ascent(FontStyle::Big) + dy,
+            (state.size.x - width * zoom) / 2.0,
+            420.0 - hud.fonts.ascent(FontStyle::Big) * zoom + dy,
         );
         let shadow = rgba(
             0,
@@ -1221,7 +1282,7 @@ fn render_messages(hud: &mut Hud, state: &HudState) {
             ((alpha as f32 / 255.0).powi(4) * alpha as f32) as u8,
         );
         hud.fonts
-            .draw(hud.batch, FontStyle::Big, text, pos, c, Some(shadow));
+            .draw_scaled(hud.batch, FontStyle::Big, text, pos, c, Some(shadow), zoom);
     }
 
     if !state.cvars.bool("ui_killconsole") {

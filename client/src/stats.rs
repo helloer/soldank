@@ -158,6 +158,8 @@ mod tests {
             how: soldank_core::DeathKind::Normal,
             weapon: Some(weapon),
             headshot,
+            hit: if headshot { 12 } else { 6 },
+            shot: Default::default(),
         };
 
         let mut stats = WeaponStats::default();

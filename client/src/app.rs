@@ -38,6 +38,8 @@ pub struct App {
     /// A session to start once the loading screen has been drawn.
     pending: Option<Session>,
     loading_drawn: bool,
+    /// The last server joined (`retry`).
+    last_join: Option<Session>,
 }
 
 impl Session {
@@ -73,6 +75,7 @@ impl App {
             vfs,
             pending: None,
             loading_drawn: false,
+            last_join: None,
         };
         match start {
             Some(session) => app.start(session),
@@ -84,6 +87,9 @@ impl App {
     /// A session starts (or the menus say why it can't).
     fn start(&mut self, session: Session) {
         self.front.loading = None;
+        if matches!(session, Session::Join { .. }) {
+            self.last_join = Some(session.clone());
+        }
         let Some(mut idle) = self.idle.take() else {
             return;
         };
@@ -278,6 +284,22 @@ impl EventHandler for App {
             }
             if std::mem::take(&mut game.to_menu) {
                 self.leave();
+            }
+            // the console's `connect`, `joinurl`, `retry`: off this game, onto the server
+            if let Some(join) = self.game.as_mut().and_then(|g| g.join.take()) {
+                match join.or_else(|| self.last_join.clone()) {
+                    Some(session) => {
+                        self.leave();
+                        self.front.loading = Some(session.loading_text());
+                        self.pending = Some(session);
+                        self.loading_drawn = false;
+                    }
+                    None => {
+                        if let Some(game) = &mut self.game {
+                            game.console.print("No server to retry");
+                        }
+                    }
+                }
             }
         }
         self.act();

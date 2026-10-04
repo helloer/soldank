@@ -57,6 +57,9 @@ fn a_flag_grabbed_in_base_and_brought_home_at_once_starts_the_servers_kick_vote(
         let alice = game.join(hello("Alice"), Link::perfect());
         let bob = game.join(hello("Bob"), Link::perfect());
         game.settle_steps(30);
+        game.clients[alice].0.send(&ClientMessage::JoinTeam(1));
+        game.clients[bob].0.send(&ClientMessage::JoinTeam(2));
+        game.settle_steps(10);
         let num = game.client(alice).net.you.unwrap();
         // Alice took the flag from its base and scored within the second
         let id = soldier(&game, "Alice");
@@ -213,6 +216,7 @@ fn chat_floods_are_kicked() {
         let line = ClientMessage::Chat {
             text: "hi".into(),
             team: false,
+            radio: None,
         };
         game.clients[bob].0.send(&line);
         game.settle_steps(60);
@@ -222,6 +226,7 @@ fn chat_floods_are_kicked() {
         let line = ClientMessage::Chat {
             text: format!("spam {i}"),
             team: false,
+            radio: None,
         };
         game.clients[alice].0.send(&line);
     }

@@ -100,18 +100,49 @@ impl Game {
             text(format!("Menu1{subject}")),
             text(format!("Menu2{subject}{place}"))
         );
+        let digits = first * 10 + digit;
+        // on a server it goes to the team (and comes back from there); alone it's here
+        if let Some(connection) = &mut self.connection {
+            connection.send(&soldank_core::net::ClientMessage::Chat {
+                text: message,
+                team: true,
+                radio: Some(digits),
+            });
+            return;
+        }
         let Some(id) = self.player else { return };
-        let length = self.console.cvars.int("ui_console_length") as usize;
-        self.hud.messages.radio(&self.world, id, &message, length);
+        self.radio_message(id, digits, &message);
+    }
 
-        // PlayRadioSound: teammates hear it (radio modes only)
+    /// A radio message from `who` (`MSGTYPE_RADIO`): the line, and the radio's voice for
+    /// the player's team (`PlayRadioSound`: in the radio modes, now and then).
+    pub(crate) fn radio_message(&mut self, who: SoldierId, digits: u8, text: &str) {
+        let muted = self.world.soldiers.get(who).is_some_and(|s| s.muted);
+        if muted || self.hud.messages.mute_all {
+            return;
+        }
+        let length = self.console.cvars.int("ui_console_length") as usize;
+        self.hud.messages.radio(&self.world, who, text, length);
+
+        let team = |id: Option<SoldierId>| {
+            id.and_then(|id| self.world.soldiers.get(id))
+                .map(|s| s.team)
+        };
+        let same_team = team(self.player).is_some() && team(self.player) == team(Some(who));
         let radio_mode = matches!(
             self.world.config.game_mode,
             GameMode::CaptureTheFlag | GameMode::HoldTheFlag | GameMode::Infiltration
         );
-        if self.hud.radio_cooldown == 0 && radio_mode {
+        let (subject, place) = (digits / 10, digits % 10);
+        if same_team
+            && self.hud.radio_cooldown == 0
+            && self.console.cvars.bool("sv_radio")
+            && radio_mode
+            && (1..=3).contains(&subject)
+            && (1..=3).contains(&place)
+        {
             self.hud.radio_cooldown = 3;
-            let sfx = Sfx::RadioEfcup.offset((first - 1) * 3 + digit - 1);
+            let sfx = Sfx::RadioEfcup.offset((subject - 1) * 3 + place - 1);
             let listener = self.listener();
             self.audio.play_here(sfx, listener.pos);
         }

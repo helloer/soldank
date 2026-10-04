@@ -2,7 +2,7 @@
 //! delay and lose packets, and a match driving it all.
 #![allow(dead_code)]
 
-use renet::{ClientId, ConnectionConfig, RenetClient, RenetServer};
+use renet2::{ClientId, ConnectionConfig, RenetClient, RenetServer};
 use soldank_core::assets::Vfs;
 use soldank_core::config::Cvars;
 use soldank_core::demo::DemoFrame;
@@ -245,6 +245,28 @@ impl TestClient {
                 }
                 Vec::new()
             }
+            // the game plays by them at once
+            Notice::Cvars(cvars) => {
+                for (cvar, value) in cvars {
+                    match self.cvars.iter_mut().find(|(c, _)| c == cvar) {
+                        Some(known) => known.1 = value.clone(),
+                        None => self.cvars.push((cvar.clone(), value.clone())),
+                    }
+                }
+                if let Some(world) = self.world.as_mut() {
+                    world.set_rules(rules(&self.cvars, &world.data));
+                }
+                Vec::new()
+            }
+            Notice::Weapons(mods) => {
+                self.weapons_mods = mods.clone();
+                if let Some(world) = self.world.as_mut() {
+                    world.data = Arc::new(self.data.with_weapons_mods(mods));
+                    world.set_rules(rules(&self.cvars, &world.data));
+                    world.reapply_weapons();
+                }
+                Vec::new()
+            }
             _ => Vec::new(),
         };
         for request in requests {
@@ -286,6 +308,16 @@ impl TestClient {
         self.download = Some(download);
         requests
     }
+}
+
+/// The rules of a world with the server's `cvars`.
+pub fn rules(cvars: &[(String, String)], data: &GameData) -> WorldConfig {
+    let mut all = Cvars::new();
+    register_cvars(&mut all);
+    for (name, value) in cvars {
+        all.set(name, value).unwrap();
+    }
+    WorldConfig::from_cvars(&all, data)
 }
 
 /// A client's world on the server's map, with its cvars.
@@ -481,7 +513,7 @@ impl TestMatch {
         let data = Arc::new(GameData::load(&self::vfs()?).unwrap());
         Some(TestMatch {
             game,
-            server: RenetServer::new(ConnectionConfig::default()),
+            server: RenetServer::new(ConnectionConfig::test()),
             clients: Vec::new(),
             data,
             now: 0,

@@ -42,7 +42,8 @@ impl GameGraphics {
         frame_percent: f32,
         interface: &InterfaceState,
         sparks: &crate::sparks::Sparks,
-    ) {
+        grab: bool,
+    ) -> Option<gfx2d::image::RgbaImage> {
         self.map.animate(elapsed);
         let zoom = f32::exp(camera.zoom);
         let cam = lerp(camera.pos_prev, camera.pos, frame_percent);
@@ -52,6 +53,23 @@ impl GameGraphics {
         let transform_bg = Transform::ortho(0.0, 1.0, dy, dy + h).matrix();
 
         self.batch.clear();
+
+        // `RenderFrame`'s order: bullets, soldiers, things, sparks; the middle scenery; flag
+        // cloths and kits; the front polygons and scenery
+        // (a late shot's trail stays a little after it's gone)
+        let shown = |b: &&Bullet| {
+            (b.active || b.ping_add > 0)
+                && !bullet_hidden(b, world, interface.player, camera.game_width, frame_percent)
+        };
+        for bullet in world.bullets.iter().filter(shown) {
+            render_bullet(
+                bullet,
+                &self.sprites,
+                &mut self.batch,
+                elapsed,
+                frame_percent,
+            );
+        }
 
         for soldier in world.soldiers.values() {
             render_soldier(
@@ -67,37 +85,22 @@ impl GameGraphics {
         for thing in world.things.iter().filter(|t| t.active) {
             render_thing(
                 thing,
-                &world.config.weapons,
+                world,
                 &self.sprites,
                 &mut self.batch,
                 frame_percent,
                 elapsed,
-            );
-        }
-
-        for bullet in world.bullets.iter().filter(|b| b.active) {
-            render_bullet(
-                bullet,
-                &self.sprites,
-                &mut self.batch,
-                elapsed,
-                frame_percent,
             );
         }
 
         sparks::render_sparks(sparks, world, &self.sprites, &mut self.batch, frame_percent);
+        let game_layer = self.batch.split();
 
-        // flag cloths and kits go on top (`PolygonsRender`)
-        let infiltration = world.config.game_mode == GameMode::Infiltration;
+        // (`PolygonsRender`)
         for thing in world.things.iter().filter(|t| t.active) {
-            render_thing_polygons(
-                thing,
-                infiltration,
-                &self.sprites,
-                &mut self.batch,
-                frame_percent,
-            );
+            render_thing_polygons(thing, world, &self.sprites, &mut self.batch, frame_percent);
         }
+        let polygons = self.batch.split();
 
         context.clear(rgb(0, 0, 0));
         context.draw(&mut self.map.background(), &transform_bg);
@@ -106,8 +109,9 @@ impl GameGraphics {
         if interface.cvars.bool("r_renderbackground") {
             context.draw(&mut self.map.scenery_back(), &transform);
         }
-        context.draw(&mut self.batch.all(), &transform);
+        context.draw(&mut self.batch.slice(game_layer), &transform);
         context.draw(&mut self.map.scenery_mid(), &transform);
+        context.draw(&mut self.batch.slice(polygons), &transform);
         context.draw(&mut self.map.polys_front(), &transform);
         context.draw(&mut self.map.scenery_front(), &transform);
         if interface.debug.any() {
@@ -122,8 +126,49 @@ impl GameGraphics {
             );
             context.draw(&mut self.debug_batch.all(), &transform);
         }
+        // the action snap: the frame without the interface (`GrabActionSnap`)
+        let caught = grab.then(|| context.read_screen());
         let width = camera.game_width;
-        self.render_interface(context, interface, world, (cam, zoom, width), elapsed);
+        // (`r_renderui`)
+        if interface.cvars.bool("r_renderui") {
+            self.render_interface(context, interface, world, (cam, zoom, width), elapsed);
+        }
+        caught
+    }
+
+    /// The action snap over the whole screen, and what to do with it
+    /// (`RenderActionSnapText`).
+    pub fn render_snap(
+        &mut self,
+        context: &mut Gfx2dContext,
+        image: &gfx2d::Texture,
+        width: f32,
+        elapsed: f64,
+    ) {
+        context.clear(rgb(0, 0, 0));
+        let sh = context.viewport().height;
+        let fonts = self
+            .fonts
+            .get_or_insert_with(|| Fonts::load(&Vfs::new(), ""));
+        fonts.prepare(context, sh / 480.0);
+        self.batch.clear();
+        let white = rgb(255, 255, 255);
+        self.batch.add_quad(
+            Some(image),
+            &[
+                vertex(vec2(0.0, 0.0), vec2(0.0, 0.0), white),
+                vertex(vec2(width, 0.0), vec2(1.0, 0.0), white),
+                vertex(vec2(width, 480.0), vec2(1.0, 1.0), white),
+                vertex(vec2(0.0, 480.0), vec2(0.0, 1.0), white),
+            ],
+        );
+        let alpha = 150 + ((5.1 * elapsed).sin() * 100.0).round().abs() as u8;
+        let text = "[[ Press F4 to Save Screen Cap ]]     [[ Press F5 to Cancel ]]";
+        let pos = vec2(30.0 * width / 640.0, 412.0);
+        let color = rgba(230, 65, 60, alpha);
+        fonts.draw(&mut self.batch, FontStyle::Small, text, pos, color, None);
+        let screen = Transform::ortho(0.0, width, 0.0, 480.0).matrix();
+        context.draw(&mut self.batch.all(), &screen);
     }
 
     /// `RenderGameInfo`: a text on a plain screen (connecting, downloading, refused, ...),
@@ -200,6 +245,8 @@ impl GameGraphics {
             con_info: state.con_info.as_ref(),
             recording: state.recording,
             wide_cut: state.wide_cut,
+            snap_offered: state.snap_offered,
+            no_crosshair: state.no_crosshair,
         };
         hud::render_hud(&mut self.batch, fonts, &self.sprites, &hud);
         if let Some(minimap) = self.minimap.as_ref().filter(|_| state.menus.minimap) {

@@ -6,6 +6,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # the server's WebTransport (rustls with aws-lc): no NASM on Windows runners
+  AWS_LC_SYS_PREBUILT_NASM: "1"
   # OpenSoldat's base game content (CC BY 4.0, see ASSETS.md), shipped next to the programs
   BASE_ASSETS_VERSION: v0.4
   SOLDAT_SMOD_SHA256: 35582954632a0b748f392c123da47fb7cba18e03a45ea0d7640cbf53ce53dd37

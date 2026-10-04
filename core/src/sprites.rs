@@ -453,5 +453,6 @@ sprites! {
         Arrow              = "interface-gfx/arrow"
         TitleL             = "interface-gfx/title-l"
         TitleR             = "interface-gfx/title-r"
+        Connection         = "interface-gfx/connection"
     }
 }

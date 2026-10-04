@@ -24,6 +24,16 @@ pub fn unix_time() -> u64 {
     return gfx2d::mq::date::now() as u64;
 }
 
+/// The time since 1970, as precisely as the platform tells it.
+pub fn since_epoch() -> std::time::Duration {
+    #[cfg(not(target_arch = "wasm32"))]
+    return std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    #[cfg(target_arch = "wasm32")]
+    return std::time::Duration::from_secs_f64(gfx2d::mq::date::now());
+}
+
 /// The local time in a strftime `format` (UTC in the browser).
 pub fn local_time(format: &str) -> String {
     #[cfg(not(target_arch = "wasm32"))]

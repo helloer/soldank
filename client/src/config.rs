@@ -90,6 +90,20 @@ pub(crate) fn register_client_cvars(cvars: &mut Cvars) {
         Cvar::bool("cl_servermods", true, "Enables server mods feature").flags(CvarFlags::CLIENT),
     );
     cvars.register(
+        Cvar::bool("cl_actionsnap", false, "Enables action snap").flags(CvarFlags::CLIENT),
+    );
+    cvars.register(
+        Cvar::bool("r_renderui", true, "Enables interface rendering").flags(CvarFlags::CLIENT),
+    );
+    cvars.register(
+        Cvar::bool(
+            "demo_showcrosshair",
+            true,
+            "Enables rendering crosshair in demos",
+        )
+        .flags(CvarFlags::CLIENT),
+    );
+    cvars.register(
         Cvar::float("cl_sensitivity", 1.0, "Mouse sensitivity")
             .flags(CvarFlags::CLIENT)
             .range(0.0, 100.0),
@@ -112,7 +126,6 @@ pub(crate) fn register_client_cvars(cvars: &mut Cvars) {
             .flags(CvarFlags::CLIENT)
             .range(0.0, 10.0),
     );
-    cvars.register(Cvar::bool("demo_autorecord", false, "Auto record demos"));
     cvars.register(
         Cvar::float("r_zoom", 0.0, "Sets rendering zoom (only for spectators)")
             .flags(CvarFlags::CLIENT)
@@ -367,6 +380,27 @@ pub(crate) fn init_console(cli: &Cli, config_dir: &Path, vfs: &Vfs) -> Console {
         console.register_command(name, help);
     }
     console.register_command("changeteam", "changeteam: team menu");
+    for (name, help) in [
+        (
+            "connect",
+            "connect <ip> [port] [password]: play on a server",
+        ),
+        (
+            "joinurl",
+            "joinurl soldat://<ip>:<port>/<password>: play on a server",
+        ),
+        ("disconnect", "disconnect: leave the server"),
+        ("retry", "retry: connect to the last server again"),
+        ("shutdown", "shutdown: leave the game for the menus"),
+        ("snap", "snap: show the action snap, or put it away"),
+        ("mute", "mute <player or id, @group, all>: hide their chat"),
+        (
+            "unmute",
+            "unmute <player or id, @group>: show their chat again",
+        ),
+    ] {
+        console.register_command(name, help);
+    }
     console.register_command(
         "addbot",
         "addbot <name>: add a bot (configs/bots/<name>.bot)",

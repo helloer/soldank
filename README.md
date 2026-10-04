@@ -1,22 +1,34 @@
 # Soldank
 
-[WIP] open source clone of Soldat engine written in rust
+[![CI](https://github.com/helloer/soldank/actions/workflows/ci.yml/badge.svg)](https://github.com/helloer/soldank/actions/workflows/ci.yml)
 
-# WIP Screenshot (click to play video)
+Open source clone of Soldat engine written in rust
 
-[![WIP screenshot](https://www.dropbox.com/s/7kijx1lv2dle6km/soldank.png?raw=1)](https://www.dropbox.com/s/56xba14jicat59l/soldank.mkv?dl=0)
-# Goals:
+## Play
 
-* Fully authentic look and feel
-* ~~bugs~~ feature-complete port of soldat
+Download a [release](https://github.com/helloer/soldank/releases), unpack it and run `soldank`.
+Run `soldank-server` to host a game (UDP port 23073, settings in `configs/server.cfg`).
+Browsers join it on the next port, 23074 (UDP and TCP).
 
-# How to build:
-1. Install Rust (stable, 1.85+) - https://rustup.rs
-2. Copy ```anims objects maps textures scenery-gfx gostek-gfx objects-gfx sparks-gfx weapons-gfx interface-gfx mod.ini``` from the `shared` directory of [opensoldat/base](https://github.com/opensoldat/base) (or from a Soldat install) to `soldank/assets`
-3. ```cargo run --release``` to run the game (```-- --map <name>``` to pick a map, default `ctf_Ash`)
+## Build
 
-# ROADMAP:
+1. Install [Rust](https://rustup.rs) 1.88 or newer.
+2. Download `soldat.smod` and `play-regular.ttf` from the
+   [opensoldat/base v0.4 release](https://github.com/opensoldat/base/releases/tag/v0.4) into the
+   repository's root.
+3. Run the game or the server:
 
-* ~~Refactor rendering code and add support for sceneries and gostek rendering~~
-* ~~Implement proper game loop~~
+   ```
+   cargo run --release
+   cargo run --release -p soldank-server
+   ```
 
+For the browser version:
+
+```
+rustup target add wasm32-unknown-unknown
+web/build.sh
+python3 -m http.server -d target/web
+```
+
+Then open http://localhost:8000/.
