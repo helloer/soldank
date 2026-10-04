@@ -714,7 +714,11 @@ fn golden_traces_match_opensoldat() {
 #[test]
 fn soldier_trace_ctf_ash() {
     let Some(vfs) = vfs() else { return };
-    let script = std::fs::read_to_string(format!("{GOLDEN_DIR}/basic_moves.script")).unwrap();
+    let path = format!("{GOLDEN_DIR}/basic_moves.script");
+    let Ok(script) = std::fs::read_to_string(&path) else {
+        eprintln!("no {path}: skipped");
+        return;
+    };
     insta::assert_snapshot!(run_script(&vfs, &script));
 }
 
