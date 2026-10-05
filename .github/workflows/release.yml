@@ -82,7 +82,10 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: soldank-${{ matrix.target }}
-          path: soldank-*.*
+          # the archive only: the folder packaged has dots in its name too (v0.1.0)
+          path: |
+            soldank-*.tar.gz
+            soldank-*.zip
           if-no-files-found: error
 
   web:
