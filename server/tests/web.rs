@@ -1,5 +1,5 @@
-//! Browsers' way in: the server's WebTransport socket and its certificate's hash over HTTP,
-//! joined by a client that does what the page does (`web/webtransport.js`): netcode's connection
+//! Browsers' way in: the server's WebTransport socket and its certificate's hash over HTTP (or a
+//! real certificate from files), joined by a client that does what the page does (`web/webtransport.js`): netcode's connection
 //! request in the URL, then datagrams. Needs the game assets, else the test is skipped.
 
 mod common;
@@ -9,7 +9,7 @@ use renet2::{ConnectionConfig, RenetClient};
 use renet2_netcode::{
     BoxedSocket, ClientAuthentication, ClientSocket, NetcodeClientTransport,
     NetcodeServerTransport, NetcodeTransportError, ServerAuthentication, ServerSetupConfig,
-    WebServerDestination,
+    WebServerDestination, WebTransportServer,
 };
 use soldank_core::net::*;
 use std::io::{ErrorKind, Read, Write};
@@ -139,24 +139,33 @@ fn fetch_hash(addr: SocketAddr) -> [u8; 32] {
     std::array::from_fn(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
 }
 
-#[test]
-fn a_browser_joins_over_webtransport() {
-    let Some(mut game) = TestMatch::new("ctf_Ash", &[]) else {
-        return;
-    };
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap();
-    // a free port, for WebTransport (UDP) and the hash (TCP)
+/// A free port on this computer, for WebTransport (UDP) and the hash (TCP).
+fn free_addr() -> SocketAddr {
     let port = UdpSocket::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
         .port();
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let socket = soldank_server::web::start(addr, 4, runtime.handle().clone()).unwrap();
+    SocketAddr::from(([127, 0, 0, 1], port))
+}
+
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+/// The map a page that takes the certificate of `hash` is welcomed to, joining `socket` at
+/// `addr` (by its IP address).
+fn join(
+    game: &mut TestMatch,
+    socket: WebTransportServer,
+    addr: SocketAddr,
+    hash: [u8; 32],
+    runtime: &tokio::runtime::Runtime,
+) -> Option<String> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
@@ -171,12 +180,12 @@ fn a_browser_joins_over_webtransport() {
         NetcodeServerTransport::new_with_sockets(config, vec![BoxedSocket::new(socket)]).unwrap();
 
     // the page's client
-    let url = url::Url::parse(&format!("https://127.0.0.1:{port}/")).unwrap();
+    let url = url::Url::parse(&format!("https://127.0.0.1:{}/", addr.port())).unwrap();
     let server = SocketAddr::from(WebServerDestination::Url(url.clone()));
     let page = PageSocket {
         url: url.to_string(),
         server,
-        hash: fetch_hash(addr),
+        hash,
         runtime: runtime.handle().clone(),
         opening: None,
         connection: None,
@@ -194,7 +203,6 @@ fn a_browser_joins_over_webtransport() {
 
     let dt = Duration::from_millis(16);
     let mut said_hello = false;
-    let mut welcome = None;
     for _ in 0..600 {
         game.server.update(dt);
         let _ = transport.update(dt, &mut game.server);
@@ -210,14 +218,57 @@ fn a_browser_joins_over_webtransport() {
         }
         while let Some(bytes) = client.receive_message(channel::RELIABLE) {
             if let Some(ServerMessage::Welcome { map, .. }) = decode(&bytes) {
-                welcome = Some(map);
+                return Some(map);
             }
         }
         let _ = client_transport.send_packets(&mut client);
-        if welcome.is_some() {
-            break;
-        }
         std::thread::sleep(Duration::from_millis(5));
     }
+    None
+}
+
+#[test]
+fn a_browser_joins_over_webtransport() {
+    let Some(mut game) = TestMatch::new("ctf_Ash", &[]) else {
+        return;
+    };
+    let runtime = runtime();
+    let addr = free_addr();
+    let socket = soldank_server::web::start(addr, 4, None, runtime.handle().clone()).unwrap();
+    let welcome = join(&mut game, socket, addr, fetch_hash(addr), &runtime);
     assert_eq!(welcome.as_deref(), Some("ctf_Ash"));
+}
+
+/// A real certificate comes from files, like Let's Encrypt's: the server's own first in the
+/// chain, the key apart. Browsers check it as usual, so no hash is told.
+#[test]
+fn a_certificate_comes_from_pem_files() {
+    let Some(mut game) = TestMatch::new("ctf_Ash", &[]) else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    // the test's client takes it by its hash, so a two-week one
+    let identity = wtransport::Identity::self_signed(["localhost", "127.0.0.1"]).unwrap();
+    let issuer = wtransport::Identity::self_signed(["issuer"]).unwrap();
+    let leaf = &identity.certificate_chain().as_slice()[0];
+    let chain = leaf.to_pem() + &issuer.certificate_chain().as_slice()[0].to_pem();
+    let files = soldank_server::web::CertificateFiles {
+        cert: dir.path().join("fullchain.pem"),
+        key: dir.path().join("privkey.pem"),
+    };
+    std::fs::write(&files.cert, chain).unwrap();
+    std::fs::write(&files.key, identity.private_key().to_secret_pem()).unwrap();
+
+    let runtime = runtime();
+    let addr = free_addr();
+    let socket = soldank_server::web::start(addr, 4, Some(&files), runtime.handle().clone());
+    let socket = socket.unwrap();
+    assert!(TcpStream::connect(addr).is_err(), "no hash told");
+    let welcome = join(&mut game, socket, addr, *leaf.hash().as_ref(), &runtime);
+    assert_eq!(welcome.as_deref(), Some("ctf_Ash"));
+
+    // a key of another certificate
+    std::fs::write(&files.key, issuer.private_key().to_secret_pem()).unwrap();
+    let addr = free_addr();
+    assert!(soldank_server::web::start(addr, 4, Some(&files), runtime.handle().clone()).is_err());
 }

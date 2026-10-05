@@ -1,7 +1,9 @@
 //! Sound in the browser: kira, with a backend of its own. The page's `sound.js` (a miniquad
-//! plugin) makes a Web Audio context whose script processor asks the game for each buffer
-//! (`soldank_audio_render`); kira's renderer mixes it. (kira's cpal backend needs
-//! wasm-bindgen, which miniquad's loader doesn't host.)
+//! plugin) plays it through Web Audio; once a frame, after the game's update, kira's renderer
+//! mixes as much as the page wants ([`mix`]), so a sound starts in the frame that asked for it.
+//! (Mixed when Web Audio asks instead, every sound asked for since its last buffer would start
+//! at once, at the buffer's start.) (kira's cpal backend needs wasm-bindgen, which miniquad's
+//! loader doesn't host.)
 
 use kira::backend::{Backend, Renderer};
 use std::cell::RefCell;
@@ -10,11 +12,15 @@ use std::cell::RefCell;
 unsafe extern "C" {
     /// Starts the page's audio (`sound.js`): its sample rate, 0 without Web Audio.
     fn soldank_audio_start() -> u32;
+    /// How many frames the page wants mixed now.
+    fn soldank_audio_wanted() -> u32;
+    /// Plays `frames` mixed frames (interleaved stereo at `ptr`) after the last ones.
+    fn soldank_audio_queue(ptr: *const f32, frames: u32);
 }
 
 thread_local! {
     static RENDERER: RefCell<Option<Renderer>> = const { RefCell::new(None) };
-    /// The last buffer, interleaved stereo.
+    /// The last frames mixed, interleaved stereo.
     static BUFFER: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -37,25 +43,32 @@ impl Backend for WebBackend {
     }
 }
 
-/// The page's audio wants `frames` more (stereo): mixed into a buffer, whose address goes back.
-#[unsafe(no_mangle)]
-pub extern "C" fn soldank_audio_render(frames: u32) -> *const f32 {
-    BUFFER.with(|buffer| {
-        let mut buffer = buffer.borrow_mut();
-        buffer.clear();
-        buffer.resize(frames as usize * 2, 0.0);
-        RENDERER.with(|renderer| {
-            if let Some(renderer) = renderer.borrow_mut().as_mut() {
-                renderer.on_start_processing();
-                renderer.process(&mut buffer, 2);
-            }
+/// Mixes what the page wants of the sound now: once a frame, after the game's update.
+pub fn mix() {
+    // SAFETY: a call for a number
+    let frames = unsafe { soldank_audio_wanted() };
+    if frames == 0 {
+        return;
+    }
+    RENDERER.with(|renderer| {
+        let mut renderer = renderer.borrow_mut();
+        let Some(renderer) = renderer.as_mut() else {
+            return;
+        };
+        BUFFER.with(|buffer| {
+            let mut buffer = buffer.borrow_mut();
+            buffer.clear();
+            buffer.resize(frames as usize * 2, 0.0);
+            renderer.on_start_processing();
+            renderer.process(&mut buffer, 2);
+            // SAFETY: the page copies the frames during the call
+            unsafe { soldank_audio_queue(buffer.as_ptr(), frames) };
         });
-        buffer.as_ptr()
-    })
+    });
 }
 
 /// The version of `sound.js` this game goes with (miniquad's loader compares them).
 #[unsafe(no_mangle)]
 pub extern "C" fn soldank_audio_crate_version() -> u32 {
-    1
+    2
 }

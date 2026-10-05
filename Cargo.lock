@@ -2820,6 +2820,7 @@ dependencies = [
  "clap",
  "renet2",
  "renet2_netcode",
+ "rustls-pki-types",
  "soldank-core",
  "tempfile",
  "tokio",

@@ -35,6 +35,16 @@ struct Cli {
     #[arg(long, value_name = "PORT")]
     web_port: Option<u16>,
 
+    /// certificate for browsers (PEM, e.g. Let's Encrypt's fullchain.pem) of a domain name of
+    /// this server, which browsers then join by [default: a self-signed one, which pages served
+    /// over HTTPS, like GitHub Pages, take only from a server on their own computer]
+    #[arg(long, value_name = "FILE", requires = "web_key")]
+    web_cert: Option<PathBuf>,
+
+    /// the certificate's private key (PEM, e.g. privkey.pem)
+    #[arg(long, value_name = "FILE", requires = "web_cert")]
+    web_key: Option<PathBuf>,
+
     /// asset directory or soldat.smod archive [default: ./assets or ./soldat.smod]
     #[arg(long, env = "SOLDANK_ASSETS")]
     assets: Option<PathBuf>,
@@ -99,11 +109,17 @@ fn main() -> anyhow::Result<()> {
     let web_port = cli.web_port.unwrap_or(cli.bind.port().wrapping_add(1));
     if web_port != 0 {
         let addr = SocketAddr::new(cli.bind.ip(), web_port);
-        let socket = web::start(addr, MAX_PLAYERS, runtime.handle().clone())
+        let certificate = cli.web_cert.clone().zip(cli.web_key.clone());
+        let files = certificate.map(|(cert, key)| web::CertificateFiles { cert, key });
+        let socket = web::start(addr, MAX_PLAYERS, files.as_ref(), runtime.handle().clone())
             .with_context(|| format!("cannot listen for browsers on {addr}"))?;
         sockets.push(BoxedSocket::new(socket));
         addresses.push(vec![addr]);
-        tracing::info!(%addr, "listening for browsers (WebTransport)");
+        let certificate = match &files {
+            Some(files) => files.cert.display().to_string(),
+            None => "self-signed".to_string(),
+        };
+        tracing::info!(%addr, certificate, "listening for browsers (WebTransport)");
     }
     let config = ServerSetupConfig {
         current_time: unix_time(),

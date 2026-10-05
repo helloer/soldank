@@ -15,6 +15,8 @@ clap.workspace = true
 renet2.workspace = true
 # UDP for the game, WebTransport for browsers
 renet2_netcode = { workspace = true, features = ["native_transport", "wt_server_transport"] }
+# a real certificate for browsers, from PEM files
+rustls-pki-types = { version = "1.15", features = ["std"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -24,7 +26,7 @@ tempfile.workspace = true
 zip.workspace = true
 # a client that joins like a browser (tests/web.rs)
 url = "2"
-wtransport = { version = "0.6", default-features = false, features = ["quinn"] }
+wtransport = { version = "0.6", default-features = false, features = ["quinn", "self-signed"] }
 
 # the performance budget: `cargo bench -p soldank-server --bench tick`
 [[bench]]

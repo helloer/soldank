@@ -147,6 +147,7 @@ impl EventHandler for Web {
         if let Some(app) = self.app() {
             app.update();
         }
+        sound::mix();
     }
 
     fn draw(&mut self) {
