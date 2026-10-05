@@ -14,21 +14,72 @@
     background: #313d4f;
     z-index: 0;
   }
+  /* while the files come: the menus' colours (client/src/front/theme.rs) */
+  #loading {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: rgb(49, 61, 79);
+    color: rgb(226, 228, 236);
+    font: 15px system-ui, sans-serif;
+  }
+  #loading.failed {
+    background: rgb(79, 49, 49);
+  }
+  #loading-title {
+    font-size: 32px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+  }
+  #loading-bar {
+    width: min(420px, 80vw);
+    height: 10px;
+    border: 1px solid rgb(70, 76, 90);
+    background: rgb(16, 19, 24);
+  }
+  #loading-done {
+    width: 0;
+    height: 100%;
+    background: rgb(214, 132, 48);
+  }
+  #loading.failed #loading-bar {
+    display: none;
+  }
+  #loading-text {
+    color: rgb(150, 156, 170);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    padding: 0 16px;
+  }
+  #loading.failed #loading-text {
+    color: rgb(240, 110, 100);
+  }
 </style>
 </head>
 <body>
 <!-- the right button is the jets: no context menu -->
 <canvas id="glcanvas" tabindex="1" oncontextmenu="return false;"></canvas>
+<div id="loading">
+  <div id="loading-title">SOLDANK</div>
+  <div id="loading-bar"><div id="loading-done"></div></div>
+  <div id="loading-text">Loading</div>
+</div>
 <!-- miniquad's loader (its js/gl.js) and the plugins egui-miniquad uses, copied here by
-     build.sh, and the game's sound and network -->
+     build.sh, and the game's sound, network and files -->
 <script src="gl.js"></script>
 <script src="sapp_jsutils.js"></script>
 <script src="quad-url.js"></script>
 <script src="sound.js"></script>
 <script src="webtransport.js"></script>
+<script src="loading.js"></script>
 <script>
   document.addEventListener("contextmenu", (event) => event.preventDefault());
-  load("soldank.wasm");
+  soldank_load("soldank.wasm", ["soldat.smod"], ["play-regular.ttf"]);
 </script>
 </body>
 </html>

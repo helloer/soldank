@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 cargo build --release --target wasm32-unknown-unknown -p soldank "$@"
 out=target/web
 mkdir -p "$out"
-cp web/index.html web/sound.js web/webtransport.js "$out/"
+cp web/index.html web/sound.js web/webtransport.js web/loading.js "$out/"
 cp target/wasm32-unknown-unknown/release/soldank.wasm "$out/"
 # miniquad's loader, and the plugins egui-miniquad's crates need (their js/ of the version in use)
 metadata=$(cargo metadata --format-version 1)

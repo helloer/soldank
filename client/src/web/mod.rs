@@ -9,8 +9,22 @@ use super::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// The files fetched next to the page: the game's archive, the interface font.
+/// The files fetched next to the page: the game's archive, the interface font. (The page's
+/// `loading.js` has them already, fetched while it showed the progress, and hands them over.)
 const FILES: [&str; 2] = ["soldat.smod", "play-regular.ttf"];
+
+#[link(wasm_import_module = "env")]
+unsafe extern "C" {
+    /// Tells the page the game is up (1), or couldn't start (0): its loading screen goes, or
+    /// says so (`loading.js`).
+    fn soldank_started(ok: i32);
+}
+
+/// The version of `loading.js` this game goes with (miniquad's loader compares them).
+#[unsafe(no_mangle)]
+pub extern "C" fn soldank_files_crate_version() -> u32 {
+    1
+}
 
 pub fn start() {
     tracing_subscriber::fmt()
@@ -126,6 +140,9 @@ impl EventHandler for Web {
                     Web::Failed
                 }
             };
+            let ok = matches!(self, Web::Running(_));
+            // SAFETY: a call with a number
+            unsafe { soldank_started(i32::from(ok)) };
         }
         if let Some(app) = self.app() {
             app.update();

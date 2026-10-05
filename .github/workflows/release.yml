@@ -115,6 +115,10 @@ jobs:
           name: soldank-web
           path: soldank-*-web.zip
           if-no-files-found: error
+      # the same files, for the pages job to put on GitHub Pages
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: soldank-${{ github.ref_name }}-web
 
   release:
     name: Publish GitHub release
@@ -136,3 +140,21 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
+
+  # the browser version of the release, playable at https://<owner>.github.io/<repository>/
+  pages:
+    name: Publish on GitHub Pages
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v5
